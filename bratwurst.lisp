@@ -450,11 +450,13 @@
   ;; if we're close enough, draw the map lines to avoid disorientation
   (let ((idx (min (truncate (* 7 scale)) 30)))
     (when (>= idx 0)
-      (let ((color (color (truncate (* (/ 255 30) idx)) 0 (truncate (* (/ 10 30) idx)))))
-      (loop for i from (* (- (mod ofsx 20)) scale) to 640 by (* 20 scale) do
-	   (sdl:draw-line-* (truncate i) 0 (truncate i) 455 :color color))
-      (loop for i from (* (- (mod ofsy 20)) scale) to 455 by (* 20 scale) do
-	   (sdl:draw-line-* 0 (truncate i) 640 (truncate i) :color color)))))
+      (let ((color (color (truncate (* (/ 255 30) idx))
+                          (truncate (* (/ 10 30) idx))
+                          (truncate (* (/ 255 30) idx)))))
+      (loop for i from (* (- (mod ofsx 20)) scale) to (game-area-width) by (* 20 scale) do
+	   (sdl:draw-line-* (truncate i) 0 (truncate i) (game-area-height) :color color))
+      (loop for i from (* (- (mod ofsy 20)) scale) to (game-area-height) by (* 20 scale) do
+	   (sdl:draw-line-* 0 (truncate i) (game-area-width) (truncate i) :color color)))))
   (dolist (i (map-pieces map))
     (draw-piece i ofsx ofsy scale)))
 
@@ -1026,7 +1028,7 @@ non-colliding position. Return T if a collision occurred."
     (setf (state-status-bar-needs-updating *state*) nil)))
 
 (defun blit-status-bar ()
-  (sdl:draw-surface-at-* *status-buffer* 0 455))
+  (sdl:draw-surface-at-* *status-buffer* 0 (1+ (game-area-height))))
 
 (defun build-player (&key controls ship special special-pt start-x start-y color)
   (make-player :controls controls
@@ -1266,6 +1268,18 @@ non-colliding position. Return T if a collision occurred."
        (sdl-mixer:halt-music)
        (sdl-mixer:close-audio t))))
 
+(defun screen-width ()
+  (sdl:width sdl:*default-display*))
+
+(defun screen-height ()
+  (sdl:height sdl:*default-display*))
+
+(defun game-area-width ()
+  (screen-width))
+
+(defun game-area-height ()
+  (- (screen-height) (sdl:height *status-buffer*)))
+
 (defun alive-players (players)
   (loop for i in players
        when (> (player-lives i) 0)
@@ -1300,7 +1314,7 @@ non-colliding position. Return T if a collision occurred."
 	 ;; many seconds behind the server.
 	 (last-server-state (backup-state *state*))
 	 (last-server-state-controls (make-empty-controls-array 4))
-         (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) (sdl:height sdl:*default-surface*))))
+         (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50)))
     (copy-controls-to *controls* last-server-state-controls)
     ;; reset the last server message since we haven't gotten any yet.
     (when (client-p server)
@@ -1337,13 +1351,15 @@ non-colliding position. Return T if a collision occurred."
 			  minimize (player-y i) into miny
 			  finally (return (values maxx maxy minx miny)))
 		     (let ((rx (max (- maxx minx) *map-max-zoom*))
-			   (ry (max (- maxy miny) *map-max-zoom*)))
+			   (ry (max (- maxy miny) *map-max-zoom*))
+                           (width (* (game-area-width) 0.75))
+                           (height (* (game-area-height) 0.75)))
 		       (setf scale
-			     (if (> rx (* (/ 500 315) ry))
-				 (/ 500 rx)
-				 (/ 315 ry))
-			     x (- (+ minx (/ (- maxx minx) 2)) (/ 320 scale))
-			     y (- (+ miny (/ (- maxy miny) 2)) (/ 227 scale)))))
+			     (if (> rx (* (/ width height) ry))
+				 (/ width rx)
+				 (/ height ry))
+			     x (- minx (/ (- (/ (game-area-width) scale) (- maxx minx)) 2)) ;;(+ minx (truncate (- maxx minx) 2))
+			     y (- miny (/ (- (/ (game-area-height) scale) (- maxy miny)) 2))))) ;; (+ miny (truncate (- maxy miny)) 2))))
 		   (update-status-bar (state-players *state*))
 		   ;; draw 
 		   (draw-map map x y scale)
@@ -1525,7 +1541,7 @@ non-colliding position. Return T if a collision occurred."
      (setf (controls-forward (aref *controls* 0)) press))
     (:sdl-key-l ;; shift_l
      (setf (controls-special (aref *controls* 0)) press))
-    (:sdl-key-semicolon ;; semicolon
+    (:sdl-key-space ;; semicolon
      (setf (controls-shoot (aref *controls* 0)) press))
 
     ;; player 2
@@ -1537,7 +1553,7 @@ non-colliding position. Return T if a collision occurred."
      (setf (controls-forward (aref *controls* 1)) press))
     (:sdl-key-o ;; o
      (setf (controls-special (aref *controls* 1)) press))
-    (:sdl-key-space ;; space
+    (:sdl-key-semicolon ;; space
      (setf (controls-shoot (aref *controls* 1)) press))
 
     (:sdl-key-escape ;; esc
