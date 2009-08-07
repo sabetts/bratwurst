@@ -1,8 +1,8 @@
 ;;; bratwurst.lisp --- An implementation of the classic amiga game
 
-;; Copyright (C) 2006  Shawn Betts
+;; Copyright (C) 2006,2009 Shawn Betts
 
-;; Author: Shawn Betts <sabetts@vcn.bc.ca>
+;; Author: Shawn Betts <sabetts@gmail.com>
 ;; Keywords: games
 
 ;; This file is free software; you can redistribute it and/or modify
@@ -22,12 +22,6 @@
 
 ;;; Commentary:
 
-;; This only works with clisp because of the networking. You want to
-;; compile it; it's too slow otherwise. To be a server you'll need
-;; clisp 2.39 or later because of a bug with
-;; socket:socket-server. Clients and single machine versions have been
-;; tested with 2.38.
-;;
 ;; you can play up to 4 players but i've only added keys on the kbd
 ;; for 2. the keys are:
 ;;
@@ -42,11 +36,11 @@
 ;;
 ;;; Code:
 
-(defpackage "BRATWURST"
+(defpackage #:bratwurst
   (:use cl)
   (:export #:bratwurst #:bratwurst-server #:bratwurst-dedicated-server #:bratwurst-client))
 
-(in-package "BRATWURST")
+(in-package #:bratwurst)
 
 ;; fucking clisp signals floating-point-underflow
 #+clisp (handler-case (setf sys::*inhibit-floating-point-underflow* t)
@@ -64,34 +58,20 @@
 (defvar *screen* nil)
 (defvar *root* nil)
 (defvar *font* nil)
-(defvar *dbl-buffer* nil)
 (defvar *status-buffer* nil)
 
 ;; (defvar *status-bar-needs-updating* nil
 ;;   "Set to T when status changes.")
 
-(defvar *map-gc* nil)
-(defvar *copy-gc* nil)
-(defvar *clear-gc* nil)
-(defvar *player1-gc* nil)
-(defvar *player2-gc* nil)
-(defvar *player3-gc* nil)
-(defvar *player4-gc* nil)
-(defvar *map-line-gc* nil)
-(defvar *map-line-num-colors* 30)
-(defvar *map-line-colors* nil
-  "a gradient of colors that lets the map lines fade in.")
+(defvar *player1-color* (sdl:color :r 255 :g 0 :b 0))
+(defvar *player2-color* (sdl:color :r 0 :g 255 :b 0))
+(defvar *player3-color* (sdl:color :r 0 :g 0 :b 255))
+(defvar *player4-color* (sdl:color :r 255 :g 255 :b 0))
 
 (defvar *map-max-zoom* 50)
 
 ;; status gcs
-(defvar *health-gc* nil)
-(defvar *ammo-gc* nil)
-(defvar *special-gc* nil)
-(defvar *status-bg-gc* nil)
-(defvar *status-used-gc* nil)
-(defvar *select-gc* nil)
-(defvar *text-gc* nil)
+(defvar *text-color* (sdl:color :r 255 :g 255 :b 255))
 
 (defstruct point x y)
 
@@ -140,7 +120,7 @@
 
 (defstruct player
   controls
-  gc
+  color
   ship
   start-x start-y
   last-x
@@ -163,7 +143,7 @@
   (last-good (make-gun :x 0 :y 0 :angle 0)))
 
 (defstruct bullet
-  x y vx vy gc)
+  x y vx vy color)
 
 (defstruct (projectile (:include bullet))
   angle)
@@ -362,8 +342,12 @@
 (defun r2d (angle)
   (/ (* angle 180) pi))
 
-(defun color (r g b)
-  (xlib:alloc-color (xlib:screen-default-colormap *screen*) (xlib:make-color :red r :green g :blue b)))
+(defun color (r g b &optional a)
+  (declare (ignore a))
+  (sdl:color :r r :g g :b b))
+
+(defun gray (intensity)
+  (color intensity intensity intensity))
 
 (defun make-default-map ()
   (let ((width 1400)
@@ -404,49 +388,10 @@
 			    )
 		   :starts '((200 200) (1200 200) (200 800) (1200 800)))))
 
-(defun init-map-line-colors ()
-  (setf *map-line-colors* (coerce
-			   (loop for i from 1 below *map-line-num-colors*
-			      collect (color (* 0.3 (/ i *map-line-num-colors*))
-					     (* 0.1 (/ i *map-line-num-colors*))
-					     (* 0.3 (/ i *map-line-num-colors*))))
-			   'vector)))
-       
-(defun init-gcs (drawable)
-  (let ((yellow (color 1 1 0))
-	(dark-yellow (color 0.7 0.7 0))
-	(black (color 0 0 0))
-	(red (color 1 0 0))
-	(green (color 0 1 0))
-	(blue (color 0 0 1))
-	(gray (color 0.6 0.6 0.6))
-	(dark-gray (color 0.4 0.4 0.4))
-	(white (color 1 1 1)))
-    (init-map-line-colors)
-    (setf *map-gc* (xlib:create-gcontext :drawable drawable :foreground dark-yellow :fill-style :solid)
-	  *map-line-gc* (xlib:create-gcontext :drawable drawable :foreground (aref *map-line-colors* 0) :fill-style :solid)
-	  *copy-gc* (xlib:create-gcontext :drawable drawable)
-	  *clear-gc* (xlib:create-gcontext :drawable drawable :foreground black :fill-style :solid)
-	  *player1-gc* (xlib:create-gcontext :drawable drawable :foreground red :fill-style :solid :background dark-gray :font *font*)
-	  *player2-gc* (xlib:create-gcontext :drawable drawable :foreground blue :fill-style :solid :background dark-gray :font *font*)
-	  *player3-gc* (xlib:create-gcontext :drawable drawable :foreground yellow :fill-style :solid :background dark-gray :font *font*)
-	  *player4-gc* (xlib:create-gcontext :drawable drawable :foreground green :fill-style :solid :background dark-gray :font *font*)
-	  ;; status gcs
-	  *health-gc* (xlib:create-gcontext :drawable drawable :foreground green :fill-style :solid)
-	  *ammo-gc* (xlib:create-gcontext :drawable drawable :foreground green :fill-style :solid)
-	  *special-gc* (xlib:create-gcontext :drawable drawable :foreground green :fill-style :solid)
-	  *status-bg-gc* (xlib:create-gcontext :drawable drawable :foreground dark-gray :fill-style :solid)
-	  *status-used-gc* (xlib:create-gcontext :drawable drawable :foreground gray :fill-style :solid)
-	  *select-gc* (xlib:create-gcontext :drawable drawable :foreground white)
-	  *text-gc* (xlib:create-gcontext :drawable *window*
-					  :foreground gray
-					  :font *font*))))
-
 (defun rotate-point (x y angle)
   (let ((angle (d2r angle)))
-    (values
-     (- (* (cos angle) x) (* (sin angle) y))
-     (+ (* (sin angle) x) (* (cos angle) y)))))
+    (sdl:point :x (- (* (cos angle) x) (* (sin angle) y))
+	       :y (+ (* (sin angle) x) (* (cos angle) y)))))
   
 (defun rotate-scale-ofs-points (pts angle scale ofsx ofsy)
   "angle is in radians."
@@ -454,73 +399,64 @@
        for x = (first i)
        for y = (second i)
        while i
-       collect (truncate (* scale (+ ofsx (- (* (cos angle) x) (* (sin angle) y)))))
-       collect (truncate (* scale (+ ofsy (+ (* (sin angle) x) (* (cos angle) y)))))))
+       collect (sdl:point :x (truncate (* scale (+ ofsx (- (* (cos angle) x) (* (sin angle) y)))))
+			  :y (truncate (* scale (+ ofsy (+ (* (sin angle) x) (* (cos angle) y))))))))
 
 ;; set it to black
-(defun clear-pixmap (pixmap)
-  (xlib:draw-rectangle pixmap *clear-gc* 0 0 640 455 t))
+;; (defun clear-pixmap (pixmap)
+;;   (xlib:draw-rectangle pixmap *clear-gc* 0 0 640 455 t))
 
-(defun blit-pixmap (pixmap window)
-  (xlib:copy-area pixmap *copy-gc* 0 0 640 455 window 0 0))
+;; (defun blit-pixmap (pixmap window)
+;;   (xlib:copy-area pixmap *copy-gc* 0 0 640 455 window 0 0))
 
-(defgeneric draw-piece (piece x y scale drawable))
+(defgeneric draw-piece (piece x y scale))
 
-(defmethod draw-piece ((piece rect-piece) x y scale drawable)
-    (xlib:draw-rectangle drawable *map-gc*
-			 (truncate (* (- (rect-piece-x piece) x) scale))
-			 (truncate (* (- (rect-piece-y piece) y) scale))
-			 (truncate (* (rect-piece-width piece) scale))
-			 (truncate (* (rect-piece-height piece) scale))
-			 t))
+(defmethod draw-piece ((piece rect-piece) x y scale)
+  (sdl:draw-box-* (truncate (* (- (rect-piece-x piece) x) scale))
+		  (truncate (* (- (rect-piece-y piece) y) scale))
+		  (truncate (* (rect-piece-width piece) scale))
+		  (truncate (* (rect-piece-height piece) scale))
+		  :color (color 178 178 0)))
 
-(defmethod draw-piece ((piece circle-piece) x y scale drawable)
-  (let* ((fradius (* (circle-piece-radius piece) scale))
-	 (diameter (truncate (* fradius 2))))
-    (xlib:draw-arc drawable *map-gc*
-		   (truncate (- (* (- (circle-piece-x piece) x) scale) fradius))
-		   (truncate (- (* (- (circle-piece-y piece) y) scale) fradius))
-		   diameter diameter
-		   0 (* 2 pi) t)))
+(defmethod draw-piece ((piece circle-piece) x y scale)
+  (let* ((fradius (* (circle-piece-radius piece) scale)))
+    (sdl-gfx:draw-filled-circle-*
+     (truncate (* (- (circle-piece-x piece) x) scale))
+     (truncate (* (- (circle-piece-y piece) y) scale))
+     (truncate fradius)
+     :color (color 178 178 0))))
 
-(defun draw-balloon (balloon x y angle scale drawable)
+(defun draw-balloon (balloon x y angle scale)
   (let* ((fradius (* (balloon-radius balloon) scale))
-	 (diameter (truncate (* fradius 2)))
 	 rx ry)
     (multiple-value-setq (rx ry) (rotate-point (balloon-x balloon) (balloon-y balloon) angle))
-    (xlib:draw-arc drawable *map-gc*
-		   (truncate (- (* (+ rx x) scale) fradius))
-		   (truncate (- (* (+ ry y) scale) fradius))
-		   diameter diameter
-		   0 (* 2 pi) nil)))
+    (sdl-gfx:draw-filled-circle-*
+     (truncate (* (+ rx x) scale))
+     (truncate (* (+ ry y) scale))
+     fradius
+     :color (color 178 178 0))))
 
-(defun draw-ship (x y angle scale ship drawable gc)
+(defun draw-ship (x y angle scale ship color)
   "angle in degrees"
   (let* ((pts (rotate-scale-ofs-points (ship-shape ship) (d2r angle) scale x y)))
-    (xlib:draw-lines drawable gc pts :fill-p t)
+    (sdl-gfx:draw-filled-polygon pts :color color)
+    (sdl-gfx:draw-aa-polygon pts :color color)
 
 ;;     (loop for i in (ship-collision-balloons ship) do
 ;; 	 (draw-balloon i x y angle scale drawable))
     ))
 
-(defun draw-map (map ofsx ofsy scale drawable)
+(defun draw-map (map ofsx ofsy scale)
   ;; if we're close enough, draw the map lines to avoid disorientation
-  (let ((idx (min (truncate (* 7 scale)) (1- (length *map-line-colors*)))))
+  (let ((idx (min (truncate (* 7 scale)) 30)))
     (when (>= idx 0)
-      (setf (xlib:gcontext-foreground *map-line-gc*) (aref *map-line-colors* idx))
+      (let ((color (color (truncate (* (/ 255 30) idx)) 0 (truncate (* (/ 10 30) idx)))))
       (loop for i from (* (- (mod ofsx 20)) scale) to 640 by (* 20 scale) do
-	   (xlib:draw-line drawable *map-line-gc* (truncate i) 0 (truncate i) 455))
+	   (sdl:draw-line-* (truncate i) 0 (truncate i) 455 :color color))
       (loop for i from (* (- (mod ofsy 20)) scale) to 455 by (* 20 scale) do
-	   (xlib:draw-line drawable *map-line-gc* 0 (truncate i) 640 (truncate i)))))
+	   (sdl:draw-line-* 0 (truncate i) 640 (truncate i) :color color)))))
   (dolist (i (map-pieces map))
-    (draw-piece i ofsx ofsy scale drawable)))
-  
-(defun make-game-window (root)
-  (let* ((bg (xlib:alloc-color (xlib:screen-default-colormap *screen*) (xlib:make-color :red 0.0 :green 0.0 :blue 0.0)))
-	 (w (xlib:create-window :parent root :x 0 :y 0 :width 640 :height 480 :background bg))
-	 (hints (xlib:make-wm-size-hints :max-width 640 :max-height 480)))
-    (setf (xlib:wm-normal-hints w) hints)
-    w))
+    (draw-piece i ofsx ofsy scale)))
 
 (defun point-circle-collision (x y cx cy radius)
   (< (sqrt (+ (expt (- x cx) 2)
@@ -772,7 +708,7 @@ non-colliding position. Return T if a collision occurred."
 		     :y (bullet-y b)
 		     :vx (* (cos (d2r angle)) magnitude)
 		     :vy (* (sin (d2r angle)) magnitude)
-		     :gc (bullet-gc b))))
+		     :color (bullet-color b))))
 
 ;; (defun angle-between-vectors (x1 y1 x2 y2)
 ;;   ;; dot prod / |A| |B| = cos (angle)
@@ -861,76 +797,74 @@ non-colliding position. Return T if a collision occurred."
   (loop for i in players do
        (setf (state-bullets *state*) (player-bullets-collision (state-bullets *state*) i))))
 
-(defun draw-bullets (x y scale drawable)
-  (let* ((fradius (* 3 scale))
-	 (diameter (truncate (* fradius 2))))
+(defun draw-bullets (x y scale)
+  (let* ((fradius (* 3 scale)))
     (dolist (i (state-bullets *state*))
-      (xlib:draw-arc drawable (bullet-gc i)
-		     (truncate (- (* (- (bullet-x i) x) scale) fradius))
-		     (truncate (- (* (- (bullet-y i) y) scale) fradius))
-		     diameter diameter 0 (* 2 pi) t))))
+      (sdl-gfx:draw-filled-circle-*
+		     (truncate (* (- (bullet-x i) x) scale))
+		     (truncate (* (- (bullet-y i) y) scale))
+		     (truncate fradius) :color (bullet-color i)))))
 
-(defun draw-projectiles (projectiles x y scale drawable)
+(defun draw-projectiles (projectiles x y scale)
   (dolist (i projectiles)
-    (xlib:draw-lines drawable (bullet-gc i)
-		     (rotate-scale-ofs-points *rocket-shape* (d2r (projectile-angle i)) scale (- (bullet-x i) x) (- (bullet-y i) y))
-		     :fill-p t)))
+    (sdl-gfx:draw-filled-polygon (rotate-scale-ofs-points *rocket-shape* (d2r (projectile-angle i)) scale (- (bullet-x i) x) (- (bullet-y i) y))
+                                 :color (bullet-color i))))
 
-(defun draw-rockets (x y scale drawable)
-  (draw-projectiles (state-rockets *state*) x y scale drawable))
+(defun draw-rockets (x y scale)
+  (draw-projectiles (state-rockets *state*) x y scale))
 
-(defun draw-missiles (x y scale drawable)
-  (draw-projectiles (state-missiles *state*) x y scale drawable))
+(defun draw-missiles (x y scale)
+  (draw-projectiles (state-missiles *state*) x y scale))
 
-(defun shoot-bullet (&key x y vx vy gc)
+(defun shoot-bullet (&key x y vx vy color)
   (push
-   (make-bullet  :x x :y y :vx vx :vy vy :gc gc)
+   (make-bullet  :x x :y y :vx vx :vy vy :color color)
    (state-bullets *state*)))
 
 (defun shoot-rocket (player)
   (when (and (not (player-special-active player))
 	     (<= (player-special-cooldown player) 0)
 	     (> (player-special player) 0))
-    (let ((angle (+ (gun-angle (player-special-gun player)) (player-angle player))))
-      (multiple-value-bind (x y) (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))
-	(push
-	 (make-rocket :owner player 
-		      :angle angle
-		      :x (+ x (player-x player))
-		      :y (+ y (player-y player))
-		      :vx (+ (player-vx player)
-			     (* (cos (d2r angle)) *bullet-speed*))
-		      :vy (+ (player-vy player)
-			     (* (sin (d2r angle)) *bullet-speed*))
-		      :gc (player-gc player))
-	 (state-rockets *state*)))
+    (let ((angle (+ (gun-angle (player-special-gun player)) (player-angle player)))
+          (pt (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))))
+      (push
+       (make-rocket :owner player 
+                    :angle angle
+                    :x (+ (sdl:x pt) (player-x player))
+                    :y (+ (sdl:y pt) (player-y player))
+                    :vx (+ (player-vx player)
+                           (* (cos (d2r angle)) *bullet-speed*))
+                    :vy (+ (player-vy player)
+                           (* (sin (d2r angle)) *bullet-speed*))
+                    :color (player-color player))
+       (state-rockets *state*))
       (decf (player-special player))
       (setf (player-special-active player) t
 	    (player-special-cooldown player) *rocket-cooldown*))))
 
 (defun shoot-tractor (player players)
   (when (> (player-special player) 0)
-    (multiple-value-bind (sx sy) (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))
-      (incf sx (player-x player))
-      (incf sy (player-y player))
-      (let* ((closest (closest-player sx sy (remove player players)))
-	     (a (pointing-angle (player-x closest) (player-y closest) sx sy)))
+    (let ((pt (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))))
+      (incf (sdl:x pt) (player-x player))
+      (incf (sdl:y pt) (player-y player))
+      (let* ((closest (closest-player (sdl:x pt) (sdl:y pt) (remove player players)))
+	     (a (pointing-angle (player-x closest) (player-y closest) (sdl:x pt) (sdl:y pt))))
 	(incf (player-vx closest) (* (cos a) *tractor-beam-strength*))
 	(incf (player-vy closest) (* (sin a) *tractor-beam-strength*)))
       (decf (player-special player)))))
 
 (defun shoot-turret (player players)
   (when (> (player-special player) 0)
-    (multiple-value-bind (sx sy) (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))
-      (incf sx (player-x player))
-      (incf sy (player-y player))
-      (let* ((closest (closest-player sx sy (remove player players)))
-	     (a (pointing-angle sx sy (player-x closest) (player-y closest))))
+    (let ((pt (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))))
+      (incf (sdl:x pt) (player-x player))
+      (incf (sdl:y pt) (player-y player))
+      (let* ((closest (closest-player (sdl:x pt) (sdl:y pt) (remove player players)))
+	     (a (pointing-angle (sdl:x pt) (sdl:y pt) (player-x closest) (player-y closest))))
 	;; FIXME: if the closest player is behind the turret, the turret will just shoot its owner
-	(shoot-bullet :x sx :y sy
+	(shoot-bullet :x (sdl:x pt) :y (sdl:y pt)
 		      :vx (* (cos a) *bullet-speed*)
 		      :vy (* (sin a) *bullet-speed*)
-		      :gc (player-gc player))
+		      :color (player-color player))
 	(decf (player-special player))))))
 
 (defun shoot-booster (player)
@@ -943,19 +877,19 @@ non-colliding position. Return T if a collision occurred."
 (defun shoot-missile (player)
   (when (and (<= (player-special-cooldown player) 0)
 	     (> (player-special player) 0))
-    (let ((angle (+ (gun-angle (player-special-gun player)) (player-angle player))))
-      (multiple-value-bind (x y) (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))
-	(push
-	 (make-missile :timer *missile-timeout*
-		       :angle angle
-		       :x (+ x (player-x player))
-		       :y (+ y (player-y player))
-		       :vx (+ (player-vx player)
-			      (* (cos (d2r angle)) *bullet-speed*))
-		       :vy (+ (player-vy player)
-			      (* (sin (d2r angle)) *bullet-speed*))
-		       :gc (player-gc player))
-	 (state-missiles *state*)))
+    (let ((angle (+ (gun-angle (player-special-gun player)) (player-angle player)))
+          (pt (rotate-point (gun-x (player-special-gun player)) (gun-y (player-special-gun player)) (player-angle player))))
+      (push
+       (make-missile :timer *missile-timeout*
+                     :angle angle
+                     :x (+ (sdl:x pt) (player-x player))
+                     :y (+ (sdl:y pt) (player-y player))
+                     :vx (+ (player-vx player)
+                            (* (cos (d2r angle)) *bullet-speed*))
+                     :vy (+ (player-vy player)
+                            (* (sin (d2r angle)) *bullet-speed*))
+                     :color (player-color player))
+       (state-missiles *state*))
       (decf (player-special player))
       (setf (player-special-cooldown player) *missile-cooldown*))))
 
@@ -967,14 +901,14 @@ non-colliding position. Return T if a collision occurred."
       (when (> (player-ammo player) 0)
 	(decf (player-ammo player))
 	(setf (state-status-bar-needs-updating *state*) t)
-	(multiple-value-bind (x y) (rotate-point (gun-x i) (gun-y i) (player-angle player))
-	  (shoot-bullet :x (+ (player-x player) x)
-			:y (+ (player-y player) y)
+	(let ((pt (rotate-point (gun-x i) (gun-y i) (player-angle player))))
+	  (shoot-bullet :x (+ (player-x player) (sdl:x pt))
+			:y (+ (player-y player) (sdl:y pt))
 			:vx (+ (player-vx player)
 			       (* (cos (d2r (+ (gun-angle i) (player-angle player)))) *bullet-speed*))
 			:vy (+ (player-vy player)
 			       (* (sin (d2r (+ (gun-angle i) (player-angle player)))) *bullet-speed*))
-			:gc (player-gc player)))))))
+			:color (player-color player)))))))
 
 (defun push-player (player vx vy)
   (incf (player-vx player) vx)
@@ -1064,19 +998,20 @@ non-colliding position. Return T if a collision occurred."
 
 (defun draw-status-bar (player x y drawable)
   ;; bg
-  (xlib:draw-rectangle drawable *status-bg-gc* x y 150 25 t)
+  (sdl:draw-box-* x y 150 25 :surface drawable :color (player-color player))
   ;; player color
   ;;(xlib:draw-rectangle drawable (player-gc player) (+ x 5) (+ y 5) 30 15 t)
   (when (> (player-lives player) 0)
     (let ((txt (format nil "~d" (player-lives player))))
-      (xlib:draw-image-glyphs drawable (player-gc player) (- (+ x 15) (truncate (xlib:text-width *font* txt) 2)) (+ y 5 (xlib:font-ascent *font*)) txt))
+      (sdl:draw-string-blended-* txt (- (+ x 15) (truncate (sdl:get-font-size txt :size :w :font *font*) 2)) (+ y 5 (sdl:get-font-ascent :font *font*))
+                                 :surface drawable :font *font* :color (gray 0)))
     ;; stats
-    (xlib:draw-rectangle drawable *status-used-gc* (+ x 50) (+ y 3) 90 5 t)
-    (xlib:draw-rectangle drawable *health-gc* (+ x 50) (+ y 3) (truncate (* 90 (/ (player-health player) (ship-max-health (player-ship player))))) 5 t)
-    (xlib:draw-rectangle drawable *status-used-gc* (+ x 50) (+ y 10) 90 5 t)
-    (xlib:draw-rectangle drawable *ammo-gc* (+ x 50) (+ y 10) (truncate (* 90 (/ (player-ammo player) (ship-max-ammo (player-ship player))))) 5 t)
-    (xlib:draw-rectangle drawable *status-used-gc* (+ x 50) (+ y 17) 90 5 t)
-    (xlib:draw-rectangle drawable *special-gc* (+ x 50) (+ y 17) (truncate (* 90 (/ (player-special player) (max-special player)))) 5 t)))
+    (sdl:draw-box-* (+ x 50) (+ y 3) 90 5 :surface drawable :color (gray 150))
+    (sdl:draw-box-* (+ x 50) (+ y 3) (truncate (* 90 (/ (player-health player) (ship-max-health (player-ship player))))) 5 :surface drawable :color (gray 200))
+    (sdl:draw-box-* (+ x 50) (+ y 10) 90 5 :surface drawable :color (gray 150))
+    (sdl:draw-box-* (+ x 50) (+ y 10) (truncate (* 90 (/ (player-ammo player) (ship-max-ammo (player-ship player))))) 5 :surface drawable :color (gray 200))
+    (sdl:draw-box-* (+ x 50) (+ y 17) 90 5  :surface drawable :color (gray 150))
+    (sdl:draw-box-* (+ x 50) (+ y 17) (truncate (* 90 (/ (player-special player) (max-special player)))) 5  :surface drawable :color (gray 200))))
 
 (defun draw-status-bars (players x y drawable)
   (loop
@@ -1086,14 +1021,14 @@ non-colliding position. Return T if a collision occurred."
 
 (defun update-status-bar (players)
   (when (state-status-bar-needs-updating *state*)
-    (xlib:draw-rectangle *status-buffer* *clear-gc* 0 0 640 25 t)
+    (sdl:clear-display (sdl:color) :surface *status-buffer*)
     (draw-status-bars players 0 0 *status-buffer*)
     (setf (state-status-bar-needs-updating *state*) nil)))
 
 (defun blit-status-bar ()
-  (xlib:copy-area *status-buffer* *copy-gc* 0 0 640 25 *window* 0 455))
+  (sdl:draw-surface-at-* *status-buffer* 0 455))
 
-(defun build-player (&key controls ship special special-pt start-x start-y gc)
+(defun build-player (&key controls ship special special-pt start-x start-y color)
   (make-player :controls controls
 	       :ship ship
 	       :ammo (ship-max-ammo ship) :health (ship-max-health ship) :special (or (second (assoc special (ship-max-special ship))) 1)
@@ -1103,7 +1038,7 @@ non-colliding position. Return T if a collision occurred."
 	       :x start-x :y start-y
 	       :angle -90 :vx 0 :vy 0
 	       :lives 5
-	       :gc gc))
+	       :color color))
 
 (defun reset-selection (selection)
   (setf (ship-selection-ship selection) 0
@@ -1113,10 +1048,10 @@ non-colliding position. Return T if a collision occurred."
 	;; (ship-selection-wait selection) nil
 	))
 
-(defun draw-text (drawable x y txt &optional (gc *text-gc*))
-  (xlib:draw-image-glyphs drawable gc (- x (truncate (xlib:text-width *font* txt) 2)) y txt))
+(defun draw-text (x y txt &optional (color *text-color*))
+  (sdl:draw-string-blended-* txt (- x (truncate (sdl:get-font-size txt :size :w :font *font*) 2)) y :color color :font *font*))
 
-(defun draw-special (special x y drawable)
+(defun draw-special (special x y)
   (let ((txt (ecase special
 	       (:none "No special")
 	       (:missile "Missile")
@@ -1124,7 +1059,7 @@ non-colliding position. Return T if a collision occurred."
 	       (:tractor "Tractor Beam")
 	       (:turret "Turret")
 	       (:booster "Booster"))))
-    (draw-text drawable x y txt)))
+    (draw-text x y txt)))
 
 (defun choose-stage (&optional server)
   "Return a list of players. server could be a cl-server or an sv-server."
@@ -1144,7 +1079,7 @@ non-colliding position. Return T if a collision occurred."
 	       (ship-special-pts (nth (ship-selection-ship player) *ships*))))
       (let ((players (list (make-ship-selection :ship 0) nil nil nil))
 	    (angle 0)
-	    (gcs (list *player1-gc* *player2-gc* *player3-gc* *player4-gc*))
+	    (colors (list *player1-color* *player2-color* *player3-color* *player4-color*))
 	    (xs '(25 350 25 350))
 	    (ys '(25 25 200 200))
 	    (width 250)
@@ -1153,8 +1088,7 @@ non-colliding position. Return T if a collision occurred."
 	    (bk-controls #(nil nil nil nil)))
 	(catch 'done
 	  (loop
-	     (unless (dedicated-server-p server)
-	       (clear-pixmap *dbl-buffer*))
+             (sdl:clear-display (sdl:color))
 	     (setf angle (mod (+ angle 2) 360))
 	     ;; depending on the server type we handle event
 	     ;; processing differently.
@@ -1197,11 +1131,11 @@ non-colliding position. Return T if a collision occurred."
 		(when (cl-server-others server)
 		  (setf players (cl-server-others server)
 			(cl-server-others server) nil))
-	       ;; read for keyboard events and send update if there are changes
-	       (let ((bk (copy-structure (cl-server-controls server))))
-		 (network-process-events)
-		 (unless (equalp bk (cl-server-controls server))
-		   (cl-send-controls server))))
+                ;; read for keyboard events and send update if there are changes
+                (let ((bk (copy-structure (cl-server-controls server))))
+                  (network-process-events)
+                  (unless (equalp bk (cl-server-controls server))
+                    (cl-send-controls server))))
 	       (t
 		;; let players tap in
 		(loop for i from 0 below 4 do
@@ -1215,7 +1149,7 @@ non-colliding position. Return T if a collision occurred."
 	     (loop
 		for i in players
 		for n from 0
-		for gc in gcs
+		for color in colors
 		for x in xs
 		for y in ys when i do
 		(if (ship-selection-wait i)
@@ -1263,28 +1197,26 @@ non-colliding position. Return T if a collision occurred."
 				 ((controls-left (aref *controls* n))
 				  (setf (ship-selection-confirm i) :done))))))))
 		;; draw the state
-		  (unless (dedicated-server-p server)
-		    (cond 
-		      ((null (ship-selection-special i))
-		       (draw-ship (+ x (/ width 2)) (+ y (/ height 2)) angle 1 (nth (ship-selection-ship i) (ships i)) *dbl-buffer* gc))
-		      ((null (ship-selection-special-pt i))
-		       (draw-special (nth (ship-selection-special i) (specials i)) (+ x (/ width 2)) (+ y (/ height 2)) *dbl-buffer*))
-		      ((null (ship-selection-confirm i))
-		       (draw-ship (+ x (/ width 2))  (+ y (/ height 2)) angle 1 (nth (ship-selection-ship i) (ships i)) *dbl-buffer* gc)
-		       (let ((pt (nth (ship-selection-special-pt i) (special-pts i))))
-			 (multiple-value-bind (px py) (rotate-point (gun-x pt) (gun-y pt) angle)
-			   (xlib:draw-arc *dbl-buffer* *select-gc* (truncate (+ x (/ width 2) px -3)) (truncate (+ y (/ height 2) py -3)) 6 6 0 (* 2 pi)))))
-		      (t 
-		       (if (eq (ship-selection-confirm i) :done)
-			   (draw-text *dbl-buffer* (+ x (/ width 2)) (+ y (/ height 2)) (format nil "Player ~a is ready to ~a" (1+ n) (nth n *ready*)))
-			   (draw-text *dbl-buffer* (+ x (/ width 2)) (+ y (/ height 2)) "Yes  Confirm!  No"))))
-		    (xlib:draw-rectangle *dbl-buffer* *select-gc* x y width height)))
+                (unless (dedicated-server-p server)
+                  (cond 
+                    ((null (ship-selection-special i))
+                     (draw-ship (+ x (/ width 2)) (+ y (/ height 2)) angle 1 (nth (ship-selection-ship i) (ships i)) color))
+                    ((null (ship-selection-special-pt i))
+                     (draw-special (nth (ship-selection-special i) (specials i)) (+ x (/ width 2)) (+ y (/ height 2))))
+                    ((null (ship-selection-confirm i))
+                     (draw-ship (+ x (/ width 2))  (+ y (/ height 2)) angle 1 (nth (ship-selection-ship i) (ships i)) color)
+                     (let* ((pt (nth (ship-selection-special-pt i) (special-pts i)))
+                            (p (rotate-point (gun-x pt) (gun-y pt) angle)))
+                         (sdl-gfx:draw-filled-circle-* (truncate (+ x (/ width 2) (sdl:x p))) (truncate (+ y (/ height 2) (sdl:y p))) 3 :color (color 255 255 255))))
+                    (t 
+                     (if (eq (ship-selection-confirm i) :done)
+                         (draw-text (+ x (/ width 2)) (+ y (/ height 2)) (format nil "Player ~a is ready to ~a" (1+ n) (nth n *ready*)))
+                         (draw-text (+ x (/ width 2)) (+ y (/ height 2)) "Yes  Confirm!  No"))))
+                  (sdl:draw-rectangle-* x y width height :color (color 255 255 255))))
 	     (unless (dedicated-server-p server)
 	       (loop while (< (- (get-internal-real-time) start) (/ internal-time-units-per-second *frame-rate*)))
 	       (setf start (get-internal-real-time))
-	       (blit-pixmap *dbl-buffer* *window*)
-	       (xlib:display-force-output *display*)
-	       (xlib:display-finish-output *display*))
+               (sdl:update-display))
 	     ;; in non network mode or when we're the server, we start
 	     ;; when all players have finished their selections
 	     (when (or (null server)
@@ -1300,14 +1232,14 @@ non-colliding position. Return T if a collision occurred."
 	(when (server-p server)
 	  (sv-send-game-start server))
 	(loop for i in players
-	   for gc in gcs
+	   for color in colors
 	   for j from 0
 	   when i
 	   collect (build-player :controls (aref *controls* j)
 				 :ship (nth (ship-selection-ship i) (ships i))
 				 :special (nth (ship-selection-special i) (specials i))
 				 :special-pt (nth (ship-selection-special-pt i) (special-pts i))
-				 :gc gc))))))
+				 :color color))))))
 
 (defun init-controls ()
   (setf *network-controls* (make-array 4)
@@ -1321,22 +1253,18 @@ non-colliding position. Return T if a collision occurred."
 	(aref *network-controls* 2) (make-controls :id 2)
 	(aref *network-controls* 3) (make-controls :id 3)))
 
-(defun init-x ()
-  (setf *display* (xlib:open-display "" :display 0)
-	*screen* (first (xlib:display-roots *display*))
-	*root* (xlib:screen-root *screen*)
-	*font* (xlib:open-font *display* "9x15bold")
-	*window* (make-game-window *root*)
-	*dbl-buffer* (xlib:create-pixmap :width 640 :height 455 :drawable *window* :depth (xlib:drawable-depth *window*))
-	*status-buffer* (xlib:create-pixmap :width 640 :height 25 :drawable *window* :depth (xlib:drawable-depth *window*))
-	(xlib:window-event-mask *window*) `(:key-press :key-release))
-  ;; this piece of bullshit is to keep clisp from freezing
-  (xlib:font-min-char *font*)
-  (init-gcs *window*)
-  (xlib:map-window *window*)
-  (xlib:display-finish-output *display*)
-  (draw-special :none 300 300 *window*)
-  (xlib:display-finish-output *display*))
+(defmacro with-graphics ((h w) &body body)
+  `(sdl:with-init (sdl:sdl-init-audio)
+     (sdl-mixer:open-audio)
+     (sdl:window ,h ,w :title-caption "Bratwurst")
+     (setf *font* (sdl-ttf:open-font (make-instance 'sdl::font-definition
+                                                    :filename (namestring (probe-file "font.ttf"))
+                                                    :size 16)))
+     (unwind-protect
+	  (sdl:with-surface (disp sdl:*default-display*)
+	    ,@body)
+       (sdl-mixer:halt-music)
+       (sdl-mixer:close-audio t))))
 
 (defun alive-players (players)
   (loop for i in players
@@ -1371,7 +1299,8 @@ non-colliding position. Return T if a collision occurred."
 	 ;; ping time or average ping time and try to stay that
 	 ;; many seconds behind the server.
 	 (last-server-state (backup-state *state*))
-	 (last-server-state-controls (make-empty-controls-array 4)))
+	 (last-server-state-controls (make-empty-controls-array 4))
+         (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) (sdl:height sdl:*default-surface*))))
     (copy-controls-to *controls* last-server-state-controls)
     ;; reset the last server message since we haven't gotten any yet.
     (when (client-p server)
@@ -1417,23 +1346,21 @@ non-colliding position. Return T if a collision occurred."
 			     y (- (+ miny (/ (- maxy miny) 2)) (/ 227 scale)))))
 		   (update-status-bar (state-players *state*))
 		   ;; draw 
-		   (draw-map map x y scale *dbl-buffer*)
-		   (draw-bullets x y scale *dbl-buffer*)
-		   (draw-rockets x y scale *dbl-buffer*)
-		   (draw-missiles x y scale *dbl-buffer*)
+		   (draw-map map x y scale)
+		   (draw-bullets x y scale)
+		   (draw-rockets x y scale)
+		   (draw-missiles x y scale)
 		   (dolist (i livers)
-		     (draw-ship (- (player-x i) x) (- (player-y i) y) (player-angle i) scale (player-ship i) *dbl-buffer* (player-gc i)))))
+		     (draw-ship (- (player-x i) x) (- (player-y i) y) (player-angle i) scale (player-ship i) (player-color i)))))
 	       ;; blitting the buffers and frame syncing
 	       (blit-buffers ()
 		 (loop while (< (- (get-internal-real-time) start) (/ internal-time-units-per-second *frame-rate*)))
 		 (setf start (get-internal-real-time))
 		 (when (<= (length (alive-players (state-players *state*))) 1)
 		   (throw 'done t))
-		 (blit-pixmap *dbl-buffer* *window*)
-		 (clear-pixmap *dbl-buffer*)
-		 (blit-status-bar)
-		 (xlib:display-force-output *display*)
-		 (xlib:display-finish-output *display*))
+                 (sdl:update-display)
+                 (sdl:clear-display (sdl:color))
+		 (blit-status-bar))
 	       ;; when a packet comes in we gotta shuffle things around
 	       (handle-packet (frame)
 		 (cond ((< (cl-server-last-frame server) frames)
@@ -1536,30 +1463,27 @@ non-colliding position. Return T if a collision occurred."
 		 (sv-server-dedicated-p server))
       (let ((player (first (alive-players (state-players *state*)))))
 	(if player
-	    (draw-text *dbl-buffer* 320 240 "You Are The Winner!" (player-gc player))
-	    (draw-text *dbl-buffer* 320 240 "Draw Game!")))
+	    (draw-text 320 240 "You Are The Winner!" (player-color player))
+	    (draw-text 320 240 "Draw Game!")))
       (loop
-	 (blit-pixmap *dbl-buffer* *window*)
 	 (blit-status-bar)
-	 (xlib:display-finish-output *display*)
+         (sdl:update-display)
 	 (process-events)))))
 
 (defun bratwurst-server (&optional (port 10005))
   (catch 'quit
     (init-controls)
-    (init-x)
-    (unwind-protect
-	 (let ((server (start-server (list (aref *controls* 1)
-					   (aref *controls* 2)
-					   (aref *controls* 3))
-				     nil port)))
-	   ;; the player on the server always uses controls 0 but we
-	   ;; dont want any of the other keys to change things, so
-	   ;; when we process events and fill network-controls this
-	   ;; allows controls 0 to be updated. it's a hack.
-	   (setf (aref *network-controls* 0) (aref *controls* 0))
-	   (do-game (choose-stage server) (make-default-map) server))
-      (xlib:close-display *display*)
+    (with-graphics (1024 768)
+      (let ((server (start-server (list (aref *controls* 1)
+					(aref *controls* 2)
+					(aref *controls* 3))
+				  nil port)))
+	;; the player on the server always uses controls 0 but we
+	;; dont want any of the other keys to change things, so
+	;; when we process events and fill network-controls this
+	;; allows controls 0 to be updated. it's a hack.
+	(setf (aref *network-controls* 0) (aref *controls* 0))
+	(do-game (choose-stage server) (make-default-map) server))
       (close-server))))
 
 (defun bratwurst-dedicated-server (&optional (port 10005))
@@ -1580,65 +1504,50 @@ non-colliding position. Return T if a collision occurred."
   (catch 'quit
     (init-controls)
     (let ((server (cl-start-client host (aref *network-controls* 0) port)))
-      (init-x)
-      (unwind-protect
-	   (do-game (choose-stage server) (make-default-map) server)
-	(xlib:close-display *display*)
-	;; (close-server)
-	))))
+      (with-graphics (1024 768)
+	   (do-game (choose-stage server) (make-default-map) server)))))
   
 (defun bratwurst ()
   "play a game of bratwurst with N players"
   (catch 'quit
     (init-controls)
-    (init-x)
-    (unwind-protect
-	 (do-game (choose-stage) (make-default-map))
-      (xlib:close-display *display*))))
+    (with-graphics (1024 768)
+      (do-game (choose-stage) (make-default-map)))))
 
-(defun update-controls (code press)
-  (let ((sym (xlib:keycode->keysym *display* code 0)))
-    (case sym
-      ;; player 1
-      (#x0068 ;; h #x0061
-       (setf (controls-left (aref *controls* 0)) press))
-      (#x006e ;; n #x0064
-       (setf (controls-right (aref *controls* 0)) press))
-      (#x0063 ;; c #x0077
-       (setf (controls-forward (aref *controls* 0)) press))
-      (#xffe1 ;; shift_l
-       (setf (controls-special (aref *controls* 0)) press))
-      (#x003b ;; semicolon
-       (setf (controls-shoot (aref *controls* 0)) press))
+(defun update-controls (sym press)
+  (case sym
+    ;; player 1
+    (:sdl-key-h ;; h #x0061
+     (setf (controls-left (aref *controls* 0)) press))
+    (:sdl-key-n ;; n #x0064
+     (setf (controls-right (aref *controls* 0)) press))
+    (:sdl-key-c ;; c #x0077
+     (setf (controls-forward (aref *controls* 0)) press))
+    (:sdl-key-l ;; shift_l
+     (setf (controls-special (aref *controls* 0)) press))
+    (:sdl-key-semicolon ;; semicolon
+     (setf (controls-shoot (aref *controls* 0)) press))
 
-      ;; player 2
-      (#x0061 ;; a
-       (setf (controls-left (aref *controls* 1)) press))
-      (#x0065 ;; e
-       (setf (controls-right (aref *controls* 1)) press))
-      (#x002c ;; ,
-       (setf (controls-forward (aref *controls* 1)) press))
-      (#x006f ;; o
-       (setf (controls-special (aref *controls* 1)) press))
-      (#x0020 ;; space
-       (setf (controls-shoot (aref *controls* 1)) press))
+    ;; player 2
+    (:sdl-key-a ;; a
+     (setf (controls-left (aref *controls* 1)) press))
+    (:sdl-key-e ;; e
+     (setf (controls-right (aref *controls* 1)) press))
+    (:sdl-key-comma ;; ,
+     (setf (controls-forward (aref *controls* 1)) press))
+    (:sdl-key-o ;; o
+     (setf (controls-special (aref *controls* 1)) press))
+    (:sdl-key-space ;; space
+     (setf (controls-shoot (aref *controls* 1)) press))
 
-      (#xff1b ;; esc
-       (throw 'quit t)))))
+    (:sdl-key-escape ;; esc
+     (throw 'quit t))))
 
-(defun handle-key-press (&rest event-keys &key code &allow-other-keys)
-  (declare (ignore event-keys))
-  (update-controls code t))
+(defun handle-key-press (sym)
+  (update-controls sym t))
 
-(defun handle-key-release (&rest event-keys &key code &allow-other-keys)
-  (declare (ignore event-keys))
-  (update-controls code nil))
-
-(defun handle-event (&rest event-slots &key event-key &allow-other-keys)
-  (case event-key
-    (:key-press (apply 'handle-key-press event-slots))
-    (:key-release (apply 'handle-key-release event-slots)))
-  t)
+(defun handle-key-release (sym)
+  (update-controls sym nil))
 
 (defun network-process-events ()
   "call this if we're in a network game. we need to override the controls."
@@ -1646,8 +1555,20 @@ non-colliding position. Return T if a collision occurred."
     (process-events)))
 
 (defun process-events ()
-  (loop while (xlib:event-listen *display* 0) do
-       (xlib:process-event *display* :handler #'handle-event)))
+  (labels ((match-event (event type)
+             (eql (cffi:foreign-enum-value 'sdl-cffi::Sdl-Event-Type type)
+                  (cffi:foreign-slot-value event 'sdl-cffi::sdl-event 'sdl-cffi::type)))
+           (keysym (event)
+             (cffi:foreign-slot-value (cffi:foreign-slot-pointer event
+                                                                 'sdl-cffi::sdl-keyboard-event
+                                                                 'sdl-cffi::keysym)
+                                      'sdl-cffi::sdl-key-sym 'sdl-cffi::sym)))
+    (let ((event (sdl:new-event)))
+      (loop while (plusp (sdl-cffi::sdl-poll-event event))
+         do (cond ((match-event event :sdl-key-down-event)
+                   (handle-key-press (keysym event)))
+                  ((match-event event :sdl-key-up-event)
+                   (handle-key-release (keysym event))))))))
 
 ;;; some naive networking. currently entirely dependant on clisp.
 
@@ -1694,17 +1615,17 @@ non-colliding position. Return T if a collision occurred."
   (typep server 'cl-server))
 
 (defun start-server (free-controls dedicated-p port)
-  (setf *server* (make-sv-server :socket (socket:socket-server port :backlog 4)
+  (setf *server* (make-sv-server :socket (usocket:socket-listen usocket:*wildcard-host* port :backlog 4)
 				 :free-controls free-controls
 				 :clients nil
 				 :dedicated-p dedicated-p))
   (format t "Waiting for connections on ~S:~D~%"
-	  (socket:socket-server-host (sv-server-socket *server*))
-	  (socket:socket-server-port (sv-server-socket *server*)))
+	  (usocket:get-local-name (sv-server-socket *server*))
+	  (usocket:get-local-port (sv-server-socket *server*)))
   *server*)
 
 (defun close-server ()
-  (socket:socket-server-close (sv-server-socket *server*)))
+  (usocket:socket-close (sv-server-socket *server*)))
   
 (defun sv-send-packet-to (client packet)
   (format (sv-client-socket client) "~s" packet))
@@ -1733,18 +1654,16 @@ non-colliding position. Return T if a collision occurred."
   (sv-send-packet server `(:game-start)))
 
 (defun sv-check-for-new-clients (server selections)
-  (when (socket:socket-status (sv-server-socket server) 0)
-    (let* ((socket (socket:socket-accept (sv-server-socket server)
-					 :buffered nil))
+  (when (listen (sv-server-socket server))
+    (let* ((socket (usocket:socket-accept (sv-server-socket server)))
 	   (controls (pop (sv-server-free-controls server)))
 	   (client (make-sv-client
 		    :socket socket
 		    :controls controls)))
       ;; tell them about it
-      (multiple-value-bind (local-host local-port) (socket:socket-stream-local socket)
-	(multiple-value-bind (remote-host remote-port) (socket:socket-stream-peer socket)
-	  (format t "Client connecting from ~S:~D to ~S:~D~%"
-		  remote-host remote-port local-host local-port)))
+      (format t "Client connecting from ~S:~D to ~S:~D~%"
+              (usocket:get-peer-name socket) (usocket:get-peer-port socket)
+              (usocket:get-local-name socket) (usocket:get-local-port socket))
       ;; tell the joining player about everyone else
       (sv-send-selections client selections)
       (push client (sv-server-clients server))
@@ -1777,23 +1696,15 @@ non-colliding position. Return T if a collision occurred."
 (defun sv-read-client-packets (server client)
   "packets are lists. car is the id and the rest is data."
   (declare (ignore server))
-  (let ((status (socket:socket-status (cons (sv-client-socket client) :input) 0)))
-    (cond 
-      ;; XXX: apparently this function never returns :eof for whatever reason
-      ((eq status :eof)
-       (let ((socket (sv-client-socket client))
-	     remote-host remote-port)
-	 (multiple-value-setq (remote-host remote-port) (socket:socket-stream-peer socket))
-	 (format t "Client from ~S:~D Disconnected!~%"
-		 remote-host remote-port)
-	 (setf (sv-client-disconnected-p client) t)
-	 nil))
-      ((null status)
-       nil)
-      (t
-       ;; presumably this will hang or throw an error if it doesn't read a whole packet
-       (sv-handle-client-packet client (read (sv-client-socket client)))
-       t))))
+  (when (listen (sv-client-socket client))
+    (handler-case
+        (sv-handle-client-packet client (read (sv-client-socket client)))
+      (end-of-file ()
+        (let ((socket (sv-client-socket client)))
+          (format t "Client from ~S:~D Disconnected!~%"
+                  (usocket:get-peer-name socket) (usocket:get-peer-port socket))
+          (setf (sv-client-disconnected-p client) t)
+          nil)))))
 
 (defun sv-read-packets (server)
   (loop for i in (sv-server-clients server) do
@@ -1854,8 +1765,7 @@ non-colliding position. Return T if a collision occurred."
 
 (defun cl-start-client (host controls port)
   (format t "Attempting to connect to server ~S:~D~%" host port)
-  (setf *server* (make-cl-server :socket (socket:socket-connect port host
-								:buffered nil)
+  (setf *server* (make-cl-server :socket (usocket:socket-connect port host)
 				 :controls controls
 				 :players nil))
   (format t "Connected!~%")
