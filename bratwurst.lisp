@@ -1020,11 +1020,11 @@ non-colliding position. Return T if a collision occurred."
       (sdl:draw-string-blended-* txt (- (+ x 15) (truncate (sdl:get-font-size txt :size :w :font *lives-font*) 2)) (+ y 5)
                                  :surface drawable :font *lives-font* :color (gray 0)))
     ;; stats
-    (sdl:draw-box-* (+ x 50) (+ y 3) 90 5 :surface drawable :color (gray 150))
+    (sdl:draw-box-* (+ x 50) (+ y 3) 90 5 :surface drawable :color (gray 50))
     (sdl:draw-box-* (+ x 50) (+ y 3) (truncate (* 90 (/ (player-health player) (ship-max-health (player-ship player))))) 5 :surface drawable :color (gray 200))
-    (sdl:draw-box-* (+ x 50) (+ y 10) 90 5 :surface drawable :color (gray 150))
+    (sdl:draw-box-* (+ x 50) (+ y 10) 90 5 :surface drawable :color (gray 50))
     (sdl:draw-box-* (+ x 50) (+ y 10) (truncate (* 90 (/ (player-ammo player) (ship-max-ammo (player-ship player))))) 5 :surface drawable :color (gray 200))
-    (sdl:draw-box-* (+ x 50) (+ y 17) 90 5  :surface drawable :color (gray 150))
+    (sdl:draw-box-* (+ x 50) (+ y 17) 90 5  :surface drawable :color (gray 50))
     (sdl:draw-box-* (+ x 50) (+ y 17) (truncate (* 90 (/ (player-special player) (max-special player)))) 5  :surface drawable :color (gray 200))))
 
 (defun draw-status-bars (players x y drawable)
@@ -1080,9 +1080,19 @@ non-colliding position. Return T if a collision occurred."
   (let ((s (sdl:create-surface (screen-width) (screen-height))))
     (sdl:clear-display (gray 100) :surface s)
     (dotimes (i 1000)
-      (sdl-gfx:draw-filled-circle-* (random (screen-width)) (random (screen-height)) (random 50) :surface s :color (gray (+ 100 (random 50)) 128)))
+      (sdl-gfx:draw-filled-circle-* (- (random (screen-width)) 0) (- (random (screen-height)) 0) (random 50) :surface s :color (gray (+ 100 (random 50)) 128)))
     s))
-  
+
+(defun make-fire-bubbles (width height thickness &key (color (gray 255)))
+  "make a cheap but neat looking background"
+  (let ((s (sdl:create-surface width height)))
+    (sdl:clear-display (gray 100) :surface s)
+    (dotimes (i 1000)
+      (sdl-gfx:draw-filled-circle-* (random (screen-width)) (random (screen-height)) (random 50) :surface s :color (color (+ 200 (random 50)) (+ 200 (random 50)) 0 128)))
+    (sdl:draw-box-* 0 0 thickness height :color color :surface s)
+    (sdl:draw-box-* (- width thickness) 0 thickness height :color color :surface s)
+    s))
+
 (defun choose-stage (&optional server)
   "Return a list of players. server could be a cl-server or an sv-server."
   (macrolet ((forward (slot list player)
@@ -1270,6 +1280,53 @@ non-colliding position. Return T if a collision occurred."
 				 :special-pt (nth (ship-selection-special-pt i) (special-pts i))
 				 :color color))))))
 
+(defun title-screen ()
+  (let ((title-font (open-font "title" 100))
+        (big-font (open-font "font" 56))
+        (fire (make-fire-bubbles (- (screen-width) 50) 300 20))
+        (selected :play))
+    (labels ((center (txt y &key selected (color (gray 255)) (font big-font))
+               (sdl:draw-string-blended-* txt
+                                          (truncate (- (screen-width) (sdl:get-font-size txt :size :w :font font)) 2)
+                                          y
+                                          :font font
+                                          :color (if selected
+                                                     (color 255 100 70)
+                                                     color)))
+             (make-selection ()
+               (catch 'select
+                 (loop
+                    (sdl:clear-display (gray 0))
+                    (sdl:draw-surface-at-* fire 25 25)
+                    (center "BRATWURST" 100 :font title-font :color (color 200 50 0))
+
+                    (center "Play Game" 450 :selected (eq selected :play))
+                    (center "Options" 550 :selected (eq selected :options))
+                    (center "Quit" 650 :selected (eq selected :quit))
+                    (sdl:update-display)
+                    (process-events (lambda (sym)
+                                      (case sym
+                                        (:sdl-key-down (setf selected (or (second (member selected '(:play :options :quit))) :play)))
+                                        (:sdl-key-up (setf selected (or (second (member selected (reverse '(:play :options :quit)))) :quit)))
+                                        (:sdl-key-return (throw 'select selected))
+                                        (:sdl-key-escape (throw 'quit nil))))
+                                    (lambda (sym) (declare (ignore sym)))))))
+             (do-options ()
+               (sdl:clear-display (gray 0))
+               (center "There Are Currently No Options" 300)
+               (sdl:update-display)
+               (loop (process-events (lambda (sym)
+                                       (when (eq sym :sdl-key-escape)
+                                         (return-from do-options nil)))
+                                     (lambda (sym) (declare (ignore sym)))))))
+      (loop
+         (catch 'main-menu
+           (ecase (make-selection)
+             (:play (do-game (choose-stage) (make-default-map)))
+             (:options (do-options))
+             (:quit (throw 'quit nil))))))))
+
+
 (defun init-controls ()
   (setf *network-controls* (make-array 4)
 	*controls* (make-array 4)
@@ -1282,16 +1339,17 @@ non-colliding position. Return T if a collision occurred."
 	(aref *network-controls* 2) (make-controls :id 2)
 	(aref *network-controls* 3) (make-controls :id 3)))
 
+(defun open-font (name size)
+  (sdl-ttf:open-font (make-instance 'sdl::font-definition
+                                    :filename (namestring (probe-file (make-pathname :defaults *resource-dir* :name name :type "ttf")))
+                                    :size size)))
+
 (defmacro with-graphics ((h w) &body body)
   `(sdl:with-init (sdl:sdl-init-audio)
      (sdl-mixer:open-audio)
      (sdl:window ,h ,w :title-caption "Bratwurst")
-     (setf *font* (sdl-ttf:open-font (make-instance 'sdl::font-definition
-                                                    :filename (namestring (probe-file (make-pathname :defaults *resource-dir* :name "font" :type "ttf")))
-                                                    :size 16))
-           *lives-font* (sdl-ttf:open-font (make-instance 'sdl::font-definition
-                                                          :filename (namestring (probe-file (make-pathname :defaults *resource-dir* :name "font" :type "ttf")))
-                                                          :size 24)))
+     (setf *font* (open-font "font" 16)
+           *lives-font* (open-font "font" 24))
      (unwind-protect
 	  (sdl:with-surface (disp sdl:*default-display*)
 	    ,@body)
@@ -1560,6 +1618,13 @@ non-colliding position. Return T if a collision occurred."
     (with-graphics (1024 768)
       (do-game (choose-stage) (make-default-map)))))
 
+(defun test ()
+  "play a game of bratwurst with N players"
+  (catch 'quit
+    (init-controls)
+    (with-graphics (1024 768)
+      (title-screen))))
+
 (defun update-controls (sym press)
   (case sym
     ;; player 1
@@ -1569,7 +1634,7 @@ non-colliding position. Return T if a collision occurred."
      (setf (controls-right (aref *controls* 0)) press))
     (:sdl-key-c ;; c #x0077
      (setf (controls-forward (aref *controls* 0)) press))
-    (:sdl-key-l ;; shift_l
+    (:sdl-key-t ;; shift_l
      (setf (controls-special (aref *controls* 0)) press))
     (:sdl-key-space ;; semicolon
      (setf (controls-shoot (aref *controls* 0)) press))
@@ -1587,7 +1652,7 @@ non-colliding position. Return T if a collision occurred."
      (setf (controls-shoot (aref *controls* 1)) press))
 
     (:sdl-key-escape ;; esc
-     (throw 'quit t))))
+     (throw 'main-menu t))))
 
 (defun handle-key-press (sym)
   (update-controls sym t))
@@ -1600,7 +1665,7 @@ non-colliding position. Return T if a collision occurred."
   (let ((*controls* *network-controls*))
     (process-events)))
 
-(defun process-events ()
+(defun process-events (&optional (key-press-fn 'handle-key-press) (key-release-fn 'handle-key-release))
   (labels ((match-event (event type)
              (eql (cffi:foreign-enum-value 'sdl-cffi::Sdl-Event-Type type)
                   (cffi:foreign-slot-value event 'sdl-cffi::sdl-event 'sdl-cffi::type)))
@@ -1612,9 +1677,9 @@ non-colliding position. Return T if a collision occurred."
     (let ((event (sdl:new-event)))
       (loop while (plusp (sdl-cffi::sdl-poll-event event))
          do (cond ((match-event event :sdl-key-down-event)
-                   (handle-key-press (keysym event)))
+                   (funcall key-press-fn (keysym event)))
                   ((match-event event :sdl-key-up-event)
-                   (handle-key-release (keysym event))))))))
+                   (funcall key-release-fn (keysym event))))))))
 
 ;;; some naive networking. currently entirely dependant on clisp.
 
