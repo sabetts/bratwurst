@@ -58,6 +58,7 @@
 (defvar *screen* nil)
 (defvar *root* nil)
 (defvar *font* nil)
+(defvar *lives-font* nil)
 (defvar *status-buffer* nil)
 
 ;; (defvar *status-bar-needs-updating* nil
@@ -68,7 +69,7 @@
 (defvar *player3-color* (sdl:color :r 0 :g 0 :b 255))
 (defvar *player4-color* (sdl:color :r 255 :g 255 :b 0))
 
-(defvar *map-max-zoom* 50)
+(defvar *map-max-zoom* 100)
 
 ;; status gcs
 (defvar *text-color* (sdl:color :r 255 :g 255 :b 255))
@@ -448,11 +449,14 @@
 
 (defun draw-map (map ofsx ofsy scale)
   ;; if we're close enough, draw the map lines to avoid disorientation
-  (let ((idx (min (truncate (* 7 scale)) 30)))
-    (when (>= idx 0)
-      (let ((color (color (truncate (* (/ 255 30) idx))
-                          (truncate (* (/ 10 30) idx))
-                          (truncate (* (/ 255 30) idx)))))
+  (let* ((intensity 150)
+         (idx (- intensity (min (truncate (- (min (/ (game-area-width) scale)
+                                                  (/ (game-area-height) scale))
+                                             *map-max-zoom*)) intensity))))
+    (when (> idx 0)
+      (let ((color (color idx
+                          (truncate 10 (/ 255 idx))
+                          idx)))
       (loop for i from (* (- (mod ofsx 20)) scale) to (game-area-width) by (* 20 scale) do
 	   (sdl:draw-line-* (truncate i) 0 (truncate i) (game-area-height) :color color))
       (loop for i from (* (- (mod ofsy 20)) scale) to (game-area-height) by (* 20 scale) do
@@ -1005,8 +1009,8 @@ non-colliding position. Return T if a collision occurred."
   ;;(xlib:draw-rectangle drawable (player-gc player) (+ x 5) (+ y 5) 30 15 t)
   (when (> (player-lives player) 0)
     (let ((txt (format nil "~d" (player-lives player))))
-      (sdl:draw-string-blended-* txt (- (+ x 15) (truncate (sdl:get-font-size txt :size :w :font *font*) 2)) (+ y 5 (sdl:get-font-ascent :font *font*))
-                                 :surface drawable :font *font* :color (gray 0)))
+      (sdl:draw-string-blended-* txt (- (+ x 15) (truncate (sdl:get-font-size txt :size :w :font *lives-font*) 2)) (+ y 5)
+                                 :surface drawable :font *lives-font* :color (gray 0)))
     ;; stats
     (sdl:draw-box-* (+ x 50) (+ y 3) 90 5 :surface drawable :color (gray 150))
     (sdl:draw-box-* (+ x 50) (+ y 3) (truncate (* 90 (/ (player-health player) (ship-max-health (player-ship player))))) 5 :surface drawable :color (gray 200))
@@ -1261,7 +1265,10 @@ non-colliding position. Return T if a collision occurred."
      (sdl:window ,h ,w :title-caption "Bratwurst")
      (setf *font* (sdl-ttf:open-font (make-instance 'sdl::font-definition
                                                     :filename (namestring (probe-file "font.ttf"))
-                                                    :size 16)))
+                                                    :size 16))
+           *lives-font* (sdl-ttf:open-font (make-instance 'sdl::font-definition
+                                                          :filename (namestring (probe-file "font.ttf"))
+                                                          :size 24)))
      (unwind-protect
 	  (sdl:with-surface (disp sdl:*default-display*)
 	    ,@body)
@@ -1360,8 +1367,8 @@ non-colliding position. Return T if a collision occurred."
 				 (/ height ry))
 			     x (- minx (/ (- (/ (game-area-width) scale) (- maxx minx)) 2)) ;;(+ minx (truncate (- maxx minx) 2))
 			     y (- miny (/ (- (/ (game-area-height) scale) (- maxy miny)) 2))))) ;; (+ miny (truncate (- maxy miny)) 2))))
-		   (update-status-bar (state-players *state*))
 		   ;; draw 
+		   (update-status-bar (state-players *state*))
 		   (draw-map map x y scale)
 		   (draw-bullets x y scale)
 		   (draw-rockets x y scale)
@@ -1374,9 +1381,9 @@ non-colliding position. Return T if a collision occurred."
 		 (setf start (get-internal-real-time))
 		 (when (<= (length (alive-players (state-players *state*))) 1)
 		   (throw 'done t))
+		 (blit-status-bar)
                  (sdl:update-display)
-                 (sdl:clear-display (sdl:color))
-		 (blit-status-bar))
+                 (sdl:clear-display (sdl:color)))
 	       ;; when a packet comes in we gotta shuffle things around
 	       (handle-packet (frame)
 		 (cond ((< (cl-server-last-frame server) frames)
