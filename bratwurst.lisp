@@ -42,12 +42,7 @@
 
 (in-package #:bratwurst)
 
-;; fucking clisp signals floating-point-underflow
-#+clisp (handler-case (setf sys::*inhibit-floating-point-underflow* t)
-	  (error (c)
-	    (declare (ignore c))
-	    (when (find-restart 'continue)
-	      (continue))))
+(defvar *resource-dir* #p"/Users/sabetts/src/bratwurst/")
 
 (defvar *ready* '("Play" "Eat" "Swim" "Rock"))
 
@@ -344,11 +339,10 @@
   (/ (* angle 180) pi))
 
 (defun color (r g b &optional a)
-  (declare (ignore a))
-  (sdl:color :r r :g g :b b))
+  (sdl:color :r r :g g :b b :a a))
 
-(defun gray (intensity)
-  (color intensity intensity intensity))
+(defun gray (intensity &optional alpha)
+  (color intensity intensity intensity alpha))
 
 (defun make-default-map ()
   (let ((width 1400)
@@ -403,6 +397,15 @@
        collect (sdl:point :x (truncate (* scale (+ ofsx (- (* (cos angle) x) (* (sin angle) y)))))
 			  :y (truncate (* scale (+ ofsy (+ (* (sin angle) x) (* (cos angle) y))))))))
 
+(defun rotate-scale-points (pts angle scale ofsx ofsy)
+  "angle is in radians."
+  (loop for i = pts then (cddr i)
+       for x = (first i)
+       for y = (second i)
+       while i
+       collect (sdl:point :x (truncate (+ ofsx (* scale (- (* (cos angle) x) (* (sin angle) y)))))
+			  :y (truncate (+ ofsy (* scale (+ (* (sin angle) x) (* (cos angle) y))))))))
+
 ;; set it to black
 ;; (defun clear-pixmap (pixmap)
 ;;   (xlib:draw-rectangle pixmap *clear-gc* 0 0 640 455 t))
@@ -436,6 +439,11 @@
      (truncate (* (+ ry y) scale))
      fradius
      :color (color 178 178 0))))
+
+(defun draw-ship-at (x y angle scale ship color)
+  (let* ((pts (rotate-scale-points (ship-shape ship) (d2r angle) scale x y)))
+    (sdl-gfx:draw-filled-polygon pts :color color)
+    (sdl-gfx:draw-aa-polygon pts :color color)))
 
 (defun draw-ship (x y angle scale ship color)
   "angle in degrees"
@@ -1055,7 +1063,7 @@ non-colliding position. Return T if a collision occurred."
 	))
 
 (defun draw-text (x y txt &optional (color *text-color*))
-  (sdl:draw-string-blended-* txt (- x (truncate (sdl:get-font-size txt :size :w :font *font*) 2)) y :color color :font *font*))
+  (sdl:draw-string-blended-* txt (truncate (- x (/ (sdl:get-font-size txt :size :w :font *font*) 2))) (truncate y) :color color :font *font*))
 
 (defun draw-special (special x y)
   (let ((txt (ecase special
@@ -1067,6 +1075,14 @@ non-colliding position. Return T if a collision occurred."
 	       (:booster "Booster"))))
     (draw-text x y txt)))
 
+(defun make-bubbles ()
+  "make a cheap but neat looking background"
+  (let ((s (sdl:create-surface (screen-width) (screen-height))))
+    (sdl:clear-display (gray 100) :surface s)
+    (dotimes (i 1000)
+      (sdl-gfx:draw-filled-circle-* (random (screen-width)) (random (screen-height)) (random 50) :surface s :color (gray (+ 100 (random 50)) 128)))
+    s))
+  
 (defun choose-stage (&optional server)
   "Return a list of players. server could be a cl-server or an sv-server."
   (macrolet ((forward (slot list player)
@@ -1083,18 +1099,23 @@ non-colliding position. Return T if a collision occurred."
 	       (ship-specials (nth (ship-selection-ship player) *ships*)))
 	     (special-pts (player)
 	       (ship-special-pts (nth (ship-selection-ship player) *ships*))))
-      (let ((players (list (make-ship-selection :ship 0) nil nil nil))
-	    (angle 0)
-	    (colors (list *player1-color* *player2-color* *player3-color* *player4-color*))
-	    (xs '(25 350 25 350))
-	    (ys '(25 25 200 200))
-	    (width 250)
-	    (height 150)
-	    (start (get-internal-real-time))
-	    (bk-controls #(nil nil nil nil)))
+      (let* ((players (list (make-ship-selection :ship 0) nil nil nil))
+             (angle 0)
+             (colors (list *player1-color* *player2-color* *player3-color* *player4-color*))
+             (width (truncate (screen-width) 2.5))
+             (height (truncate (screen-height) 2.5))
+             (padx (truncate (- (screen-width) (* width 2)) 3))
+             (pady (truncate (- (screen-height) (* height 2)) 3))
+             (scale (* 1.9 (/ (screen-width) width)))
+             (xs `(,padx ,(+ width (* padx 2)) padx (+ width (* padx 2))))
+             (ys `(,pady ,pady ,(+ height (* pady 2)) ,(+ height (* pady 2))))
+             (start (get-internal-real-time))
+             (bk-controls #(nil nil nil nil))
+             (bubbles (make-bubbles)))
 	(catch 'done
 	  (loop
-             (sdl:clear-display (sdl:color))
+             ;;(sdl:clear-display (sdl:color))
+             (sdl:draw-surface bubbles)
 	     (setf angle (mod (+ angle 2) 360))
 	     ;; depending on the server type we handle event
 	     ;; processing differently.
@@ -1204,21 +1225,23 @@ non-colliding position. Return T if a collision occurred."
 				  (setf (ship-selection-confirm i) :done))))))))
 		;; draw the state
                 (unless (dedicated-server-p server)
+                  (sdl:draw-box-* x y width height :color (sdl:color :r 0 :g 0 :b 0) :alpha 128)
+                  (sdl:draw-rectangle-* x y width height :color (color 255 255 255))
                   (cond 
                     ((null (ship-selection-special i))
-                     (draw-ship (+ x (/ width 2)) (+ y (/ height 2)) angle 1 (nth (ship-selection-ship i) (ships i)) color))
+                     (draw-ship-at (+ x (/ width 2)) (+ y (/ height 2)) angle scale (nth (ship-selection-ship i) (ships i)) color))
                     ((null (ship-selection-special-pt i))
                      (draw-special (nth (ship-selection-special i) (specials i)) (+ x (/ width 2)) (+ y (/ height 2))))
                     ((null (ship-selection-confirm i))
-                     (draw-ship (+ x (/ width 2))  (+ y (/ height 2)) angle 1 (nth (ship-selection-ship i) (ships i)) color)
+                     (draw-ship-at (+ x (/ width 2))  (+ y (/ height 2)) angle scale (nth (ship-selection-ship i) (ships i)) color)
                      (let* ((pt (nth (ship-selection-special-pt i) (special-pts i)))
-                            (p (rotate-point (gun-x pt) (gun-y pt) angle)))
-                         (sdl-gfx:draw-filled-circle-* (truncate (+ x (/ width 2) (sdl:x p))) (truncate (+ y (/ height 2) (sdl:y p))) 3 :color (color 255 255 255))))
+                            (p (rotate-point (* scale (gun-x pt)) (* scale (gun-y pt)) angle)))
+                         (sdl-gfx:draw-filled-circle-* (truncate (+ x (/ width 2) (sdl:x p))) (truncate (+ y (/ height 2) (sdl:y p))) 3 :color (color 255 255 255))
+                         (sdl-gfx:draw-aa-circle-* (truncate (+ x (/ width 2) (sdl:x p))) (truncate (+ y (/ height 2) (sdl:y p))) 6 :color (color 255 255 255))))
                     (t 
                      (if (eq (ship-selection-confirm i) :done)
                          (draw-text (+ x (/ width 2)) (+ y (/ height 2)) (format nil "Player ~a is ready to ~a" (1+ n) (nth n *ready*)))
-                         (draw-text (+ x (/ width 2)) (+ y (/ height 2)) "Yes  Confirm!  No"))))
-                  (sdl:draw-rectangle-* x y width height :color (color 255 255 255))))
+                         (draw-text (+ x (/ width 2)) (+ y (/ height 2)) "Yes  Confirm!  No"))))))
 	     (unless (dedicated-server-p server)
 	       (loop while (< (- (get-internal-real-time) start) (/ internal-time-units-per-second *frame-rate*)))
 	       (setf start (get-internal-real-time))
@@ -1264,10 +1287,10 @@ non-colliding position. Return T if a collision occurred."
      (sdl-mixer:open-audio)
      (sdl:window ,h ,w :title-caption "Bratwurst")
      (setf *font* (sdl-ttf:open-font (make-instance 'sdl::font-definition
-                                                    :filename (namestring (probe-file "font.ttf"))
+                                                    :filename (namestring (probe-file (make-pathname :defaults *resource-dir* :name "font" :type "ttf")))
                                                     :size 16))
            *lives-font* (sdl-ttf:open-font (make-instance 'sdl::font-definition
-                                                          :filename (namestring (probe-file "font.ttf"))
+                                                          :filename (namestring (probe-file (make-pathname :defaults *resource-dir* :name "font" :type "ttf")))
                                                           :size 24)))
      (unwind-protect
 	  (sdl:with-surface (disp sdl:*default-display*)
