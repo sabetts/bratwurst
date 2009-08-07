@@ -114,6 +114,26 @@
    (controls-special controls)
    (controls-shoot controls)))
 
+(defvar *player-1-keys*
+  (make-controls :left :sdl-key-h
+                 :right :sdl-key-n
+                 :forward :sdl-key-c
+                 :special :sdl-key-t
+                 :shoot :sdl-key-space))
+
+(defvar *player-2-keys*
+  (make-controls :left :sdl-key-a
+                 :right :sdl-key-e
+                 :forward :sdl-key-comma
+                 :special :sdl-key-o
+                 :shoot :sdl-key-semicolon))
+
+(defvar *player-3-keys*
+  (make-controls))
+
+(defvar *player-4-keys*
+  (make-controls))
+
 (defstruct player
   controls
   color
@@ -495,8 +515,8 @@
 
 (defun bullet-map-collision (bullet map)
   (find-if (lambda (p)
-	     (point-piece-collision (bullet-x bullet) (bullet-y bullet) p))
-	   (map-pieces map)))
+             (point-piece-collision (bullet-x bullet) (bullet-y bullet) p))
+           (map-pieces map)))
 
 (defun player-piece-collision (pts piece)
   (loop for i = pts then (cddr i)
@@ -1120,7 +1140,7 @@ non-colliding position. Return T if a collision occurred."
              (xs `(,padx ,(+ width (* padx 2)) padx (+ width (* padx 2))))
              (ys `(,pady ,pady ,(+ height (* pady 2)) ,(+ height (* pady 2))))
              (start (get-internal-real-time))
-             (bk-controls #(nil nil nil nil))
+             (bk-controls (vector nil nil nil nil))
              (bubbles (make-bubbles)))
 	(catch 'done
 	  (loop
@@ -1283,8 +1303,7 @@ non-colliding position. Return T if a collision occurred."
 (defun title-screen ()
   (let ((title-font (open-font "title" 100))
         (big-font (open-font "font" 56))
-        (fire (make-fire-bubbles (- (screen-width) 50) 300 20))
-        (selected :play))
+        (fire (make-fire-bubbles (- (screen-width) 50) 300 20)))
     (labels ((center (txt y &key selected (color (gray 255)) (font big-font))
                (sdl:draw-string-blended-* txt
                                           (truncate (- (screen-width) (sdl:get-font-size txt :size :w :font font)) 2)
@@ -1293,38 +1312,74 @@ non-colliding position. Return T if a collision occurred."
                                           :color (if selected
                                                      (color 255 100 70)
                                                      color)))
+             (stringize (symbol)
+               (substitute #\Space #\- (string-capitalize symbol)))
+             (menu (options &key draw-fn (yofs 0) (key 'identity) (selected (first options)))
+               (loop
+                  (sdl:clear-display (gray 0))
+                  (when draw-fn (funcall draw-fn))
+                  (loop
+                     with height = (sdl:get-font-height :font big-font)
+                     with pad = 20
+                     for i in options
+                     for y = (+ yofs (truncate (- (screen-height) (- (* (+ height pad) (length options)) pad)) 2)) then (+ y height pad)
+                     do (center (funcall key i) y :selected (eq selected i)))
+                  (sdl:update-display)
+                  (case (wait-for-key)
+                    (:sdl-key-down (setf selected (or (second (member selected options)) (first options))))
+                    (:sdl-key-up (setf selected (or (second (member selected (reverse options))) (car (last options)))))
+                    (:sdl-key-return (return-from menu selected))
+                    (:sdl-key-escape (return-from menu nil)))))
              (make-selection ()
-               (catch 'select
+               (menu '(:play-game
+                       :networking
+                       :options
+                       :quit)
+                     :draw-fn (lambda ()
+                                (sdl:draw-surface-at-* fire 25 25)
+                                (center "BRATWURST" 100 :font title-font :color (color 200 50 0)))
+                     :yofs 200
+                     :key #'stringize))
+             (do-keys (keys)
+               (let ((selected 'left))
                  (loop
-                    (sdl:clear-display (gray 0))
-                    (sdl:draw-surface-at-* fire 25 25)
-                    (center "BRATWURST" 100 :font title-font :color (color 200 50 0))
-
-                    (center "Play Game" 450 :selected (eq selected :play))
-                    (center "Options" 550 :selected (eq selected :options))
-                    (center "Quit" 650 :selected (eq selected :quit))
-                    (sdl:update-display)
-                    (process-events (lambda (sym)
-                                      (case sym
-                                        (:sdl-key-down (setf selected (or (second (member selected '(:play :options :quit))) :play)))
-                                        (:sdl-key-up (setf selected (or (second (member selected (reverse '(:play :options :quit)))) :quit)))
-                                        (:sdl-key-return (throw 'select selected))
-                                        (:sdl-key-escape (throw 'quit nil))))
-                                    (lambda (sym) (declare (ignore sym)))))))
+                    (let ((slot (menu '(left right forward shoot special)
+                                      :selected selected
+                                      :key (lambda (control)
+                                             (format nil "~:(~a~): ~a"
+                                                     control
+                                                     (if (slot-value keys control)
+                                                         (subseq (stringize (slot-value keys control))
+                                                                 (length "sdl-key-"))
+                                                         "None"))))))
+                      (if slot
+                          (let* ((h (sdl:get-font-height :font big-font))
+                                 (y (truncate (- (screen-height) (sdl:get-font-height :font big-font)) 2)))
+                            (sdl:draw-box-* 0 0 (screen-width) (screen-height) :color (color 0 0 0) :alpha 200)
+                            (sdl:draw-box-* 0 (- y 5) (screen-width) (+ h 10) :color (color 30 0 30))
+                            (sdl:draw-rectangle-* -1 (- y 5) (+ (screen-width) 2) (+ h 10) :color (color 60 0 60))
+                            (center "Press A Key" (truncate (- (screen-height) h) 2))
+                            (sdl:update-display)
+                            (setf (slot-value keys slot) (wait-for-key)
+                                  selected slot))
+                          (return nil))))))
              (do-options ()
-               (sdl:clear-display (gray 0))
-               (center "There Are Currently No Options" 300)
-               (sdl:update-display)
-               (loop (process-events (lambda (sym)
-                                       (when (eq sym :sdl-key-escape)
-                                         (return-from do-options nil)))
-                                     (lambda (sym) (declare (ignore sym)))))))
+               (let ((p (menu '(*player-1-keys*
+                                *player-2-keys*
+                                *player-3-keys*
+                                *player-4-keys*)
+                              :key (lambda (s) (string-trim '(#\*) (stringize s))))))
+                 (when p
+                   (do-keys (symbol-value p)))))
+             (do-network ()
+               (menu '(:start-server :connect-to-server) :key #'stringize)))
       (loop
          (catch 'main-menu
            (ecase (make-selection)
-             (:play (do-game (choose-stage) (make-default-map)))
+             (:play-game (do-game (choose-stage) (make-default-map)))
+             (:networking (do-network))
              (:options (do-options))
-             (:quit (throw 'quit nil))))))))
+             ((nil :quit) (throw 'quit nil))))))))
 
 
 (defun init-controls ()
@@ -1616,43 +1671,27 @@ non-colliding position. Return T if a collision occurred."
   (catch 'quit
     (init-controls)
     (with-graphics (1024 768)
-      (do-game (choose-stage) (make-default-map)))))
-
-(defun test ()
-  "play a game of bratwurst with N players"
-  (catch 'quit
-    (init-controls)
-    (with-graphics (1024 768)
       (title-screen))))
 
 (defun update-controls (sym press)
-  (case sym
-    ;; player 1
-    (:sdl-key-h ;; h #x0061
-     (setf (controls-left (aref *controls* 0)) press))
-    (:sdl-key-n ;; n #x0064
-     (setf (controls-right (aref *controls* 0)) press))
-    (:sdl-key-c ;; c #x0077
-     (setf (controls-forward (aref *controls* 0)) press))
-    (:sdl-key-t ;; shift_l
-     (setf (controls-special (aref *controls* 0)) press))
-    (:sdl-key-space ;; semicolon
-     (setf (controls-shoot (aref *controls* 0)) press))
-
-    ;; player 2
-    (:sdl-key-a ;; a
-     (setf (controls-left (aref *controls* 1)) press))
-    (:sdl-key-e ;; e
-     (setf (controls-right (aref *controls* 1)) press))
-    (:sdl-key-comma ;; ,
-     (setf (controls-forward (aref *controls* 1)) press))
-    (:sdl-key-o ;; o
-     (setf (controls-special (aref *controls* 1)) press))
-    (:sdl-key-semicolon ;; space
-     (setf (controls-shoot (aref *controls* 1)) press))
-
-    (:sdl-key-escape ;; esc
-     (throw 'main-menu t))))
+  (labels ((update (player idx)
+             (cond
+               ((eq sym (controls-left player))
+                (setf (controls-left (aref *controls* idx)) press))
+               ((eq sym (controls-right player))
+                (setf (controls-right (aref *controls* idx)) press))
+               ((eq sym (controls-forward player))
+                (setf (controls-forward (aref *controls* idx)) press))
+               ((eq sym (controls-special player))
+                (setf (controls-special (aref *controls* idx)) press))
+               ((eq sym (controls-shoot player))
+                (setf (controls-shoot (aref *controls* idx)) press)))))
+    (update *player-1-keys* 0)
+    (update *player-2-keys* 1)
+    (update *player-3-keys* 2)
+    (update *player-4-keys* 3)
+    (when (eq sym :sdl-key-escape)
+      (throw 'main-menu t))))
 
 (defun handle-key-press (sym)
   (update-controls sym t))
@@ -1664,6 +1703,20 @@ non-colliding position. Return T if a collision occurred."
   "call this if we're in a network game. we need to override the controls."
   (let ((*controls* *network-controls*))
     (process-events)))
+
+(defun wait-for-key ()
+  (labels ((match-event (event type)
+             (eql (cffi:foreign-enum-value 'sdl-cffi::Sdl-Event-Type type)
+                  (cffi:foreign-slot-value event 'sdl-cffi::sdl-event 'sdl-cffi::type)))
+           (keysym (event)
+             (cffi:foreign-slot-value (cffi:foreign-slot-pointer event
+                                                                 'sdl-cffi::sdl-keyboard-event
+                                                                 'sdl-cffi::keysym)
+                                      'sdl-cffi::sdl-key-sym 'sdl-cffi::sym)))
+    (let ((event (sdl:new-event)))
+      (loop while (plusp (sdl-cffi::sdl-wait-event event))
+         do (cond ((match-event event :sdl-key-down-event)
+                   (return-from wait-for-key (keysym event))))))))
 
 (defun process-events (&optional (key-press-fn 'handle-key-press) (key-release-fn 'handle-key-release))
   (labels ((match-event (event type)
@@ -1680,204 +1733,3 @@ non-colliding position. Return T if a collision occurred."
                    (funcall key-press-fn (keysym event)))
                   ((match-event event :sdl-key-up-event)
                    (funcall key-release-fn (keysym event))))))))
-
-;;; some naive networking. currently entirely dependant on clisp.
-
-;; start the game for N players. players join the server and are given
-;; a player id 0 - 3. controls are mapped to network streams or
-;; keyboards.
-
-(defstruct cl-server
-  socket controls
-  ;; a list of indexes into *controls* for the other players. this is
-  ;; used when choosing the stage to detect new players
-  players
-  ;; a list of the existing player choose states when this client
-  ;; joined
-  others
-  ;; the last frame from the server
-  last-frame)
-
-(defstruct sv-client
-  frame-packet-read-p
-  socket controls stream
-  ;; this is set to T when we get they close their connection
-  disconnected-p)
-
-(defstruct sv-server
-  socket
-  free-controls
-  clients
-  dedicated-p)
-
-(defvar *server* nil)
-
-(defun server-p (&optional (server *server*))
-  "are we the server?"
-  (typep server 'sv-server))
-
-(defun dedicated-server-p (&optional (server *server*))
-  "are we the server?"
-  (and (server-p server)
-       (sv-server-dedicated-p server)))
-
-(defun client-p (&optional (server *server*))
-  "are we a client?"
-  (typep server 'cl-server))
-
-(defun start-server (free-controls dedicated-p port)
-  (setf *server* (make-sv-server :socket (usocket:socket-listen usocket:*wildcard-host* port :backlog 4)
-				 :free-controls free-controls
-				 :clients nil
-				 :dedicated-p dedicated-p))
-  (format t "Waiting for connections on ~S:~D~%"
-	  (usocket:get-local-name (sv-server-socket *server*))
-	  (usocket:get-local-port (sv-server-socket *server*)))
-  *server*)
-
-(defun close-server ()
-  (usocket:socket-close (sv-server-socket *server*)))
-  
-(defun sv-send-packet-to (client packet)
-  (format (sv-client-socket client) "~s" packet))
-
-(defun sv-send-packet (server packet)
-  (loop for i in (sv-server-clients server) do
-       (sv-send-packet-to i packet)))
-
-(defun sv-send-join (server controls)
-  (sv-send-packet server `(:join ,controls)))
-
-(defun sv-send-selections (client selections)
-  (sv-send-packet-to client `(:others ,@selections)))
-
-(defun sv-send-controls (server frame)
-  ;;(format t "Sent controls packet ~d~%" frame)
-  (sv-send-packet server `(:controls ,frame
-				     ,(controls-list (aref *controls* 0))
-				     ,@(loop for i in (sv-server-clients server)
-					  collect (controls-list (sv-client-controls i))))))
-
-(defun sv-send-heartbeat (server frame)
-  (sv-send-packet server `(:heartbeat ,frame)))
-
-(defun sv-send-game-start (server)
-  (sv-send-packet server `(:game-start)))
-
-(defun sv-check-for-new-clients (server selections)
-  (when (listen (sv-server-socket server))
-    (let* ((socket (usocket:socket-accept (sv-server-socket server)))
-	   (controls (pop (sv-server-free-controls server)))
-	   (client (make-sv-client
-		    :socket socket
-		    :controls controls)))
-      ;; tell them about it
-      (format t "Client connecting from ~S:~D to ~S:~D~%"
-              (usocket:get-peer-name socket) (usocket:get-peer-port socket)
-              (usocket:get-local-name socket) (usocket:get-local-port socket))
-      ;; tell the joining player about everyone else
-      (sv-send-selections client selections)
-      (push client (sv-server-clients server))
-      ;; tell all the players about the join.
-      (sv-send-join server controls)
-      controls)))
-    
-(defun import-controls (c data)
-  (when data
-    (setf (controls-left c) (first data)
-	  (controls-right c) (second data)
-	  (controls-forward c) (third data)
-	  (controls-special c) (fourth data)
-	  (controls-shoot c) (fifth data))))
-
-(defun sv-handle-client-packet (client packet)
-  (let ((type (first packet))
-	(data (rest packet)))
-    (ecase type
-      (:heartbeat
-       ;; the client did nothing so they just need to send a heartbeat
-       (setf (sv-client-frame-packet-read-p client) t))
-      (:controls
-       ;; the client pressed or released keys so here's the current
-       ;; state of the controls
-       (let ((c (sv-client-controls client)))
-	 (import-controls c data)
-	 (setf (sv-client-frame-packet-read-p client) t))))))
-
-(defun sv-read-client-packets (server client)
-  "packets are lists. car is the id and the rest is data."
-  (declare (ignore server))
-  (when (listen (sv-client-socket client))
-    (handler-case
-        (sv-handle-client-packet client (read (sv-client-socket client)))
-      (end-of-file ()
-        (let ((socket (sv-client-socket client)))
-          (format t "Client from ~S:~D Disconnected!~%"
-                  (usocket:get-peer-name socket) (usocket:get-peer-port socket))
-          (setf (sv-client-disconnected-p client) t)
-          nil)))))
-
-(defun sv-read-packets (server)
-  (loop for i in (sv-server-clients server) do
-       (sv-read-client-packets server i)))
-
-(defun sv-read-all-packets (server)
-  (loop for i in (sv-server-clients server) do
-       (loop while (sv-read-client-packets server i))))
-
-(defun cl-send-heartbeat (server)
-  (write-string "(:heartbeat)" (cl-server-socket server)))
-
-(defun cl-send-controls (server)
-  (let ((c (cl-server-controls server)))
-    (format (cl-server-socket server) "(:controls ~a ~a ~a ~a ~a)"
-	    (controls-left c)
-	    (controls-right c)
-	    (controls-forward c)
-	    (controls-special c)
-	    (controls-shoot c))))
-
-(defun cl-handle-server-packet (server packet)
-  (let ((type (first packet))
-	(data (rest packet)))
-    (ecase type
-      ;; nothing has changed. so you just get a heartbeat
-      (:heartbeat
-       ;;(format t "heartbeat for frame ~d!~%" (first data))
-       (setf (cl-server-last-frame server) (first data)))
-      ;; someone joined the game. data contains the controls index
-      (:join 
-       (push (first data) (cl-server-players server)))
-      ;; the state of the others when this client joined. this is set
-      ;; and then bubbles up to the choose ship part.
-      (:others
-       (setf (cl-server-others server) data))
-      ;; an update to 1 or more of the controls
-      (:controls
-       ;; data will always have up to 4 elements corresponding to each
-       ;; player. if its nil then there were no changes to that player's controls
-       ;; the second arg is the frame number
-       ;;(format t "controls for frame ~d!~%" (first data))
-       (setf (cl-server-last-frame server) (pop data))
-       (loop
-	  for i in data do
-	  (import-controls (aref *controls* (car i)) (cdr i))))
-      ;; this really seems like the wrong place to do this. 
-      (:game-start
-       (throw 'done t)))))
-
-(defun cl-read-packets (server)
-  (when (listen (cl-server-socket server))
-    (cl-handle-server-packet server (read (cl-server-socket server)))
-    t))
-
-(defun cl-blocking-read-packets (server)
-  (cl-handle-server-packet server (read (cl-server-socket server))))
-
-(defun cl-start-client (host controls port)
-  (format t "Attempting to connect to server ~S:~D~%" host port)
-  (setf *server* (make-cl-server :socket (usocket:socket-connect port host)
-				 :controls controls
-				 :players nil))
-  (format t "Connected!~%")
-  *server*)
