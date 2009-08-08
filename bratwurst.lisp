@@ -1303,17 +1303,38 @@ non-colliding position. Return T if a collision occurred."
 (defun title-screen ()
   (let ((title-font (open-font "title" 100))
         (big-font (open-font "font" 56))
-        (fire (make-fire-bubbles (- (screen-width) 50) 300 20)))
+        (fire (make-fire-bubbles (- (screen-width) 50) 300 20))
+        (host ""))
     (labels ((center (txt y &key selected (color (gray 255)) (font big-font))
-               (sdl:draw-string-blended-* txt
-                                          (truncate (- (screen-width) (sdl:get-font-size txt :size :w :font font)) 2)
-                                          y
-                                          :font font
-                                          :color (if selected
-                                                     (color 255 100 70)
-                                                     color)))
+               (when (plusp (length txt))
+                 (sdl:draw-string-blended-* txt
+                                            (truncate (- (screen-width) (sdl:get-font-size txt :size :w :font font)) 2)
+                                            y
+                                            :font font
+                                            :color (if selected
+                                                       (color 255 100 70)
+                                                       color))))
              (stringize (symbol)
                (substitute #\Space #\- (string-capitalize symbol)))
+             (input (title &optional (text ""))
+               (let* ((h (sdl:get-font-height :font big-font))
+                      (y (truncate (- (screen-height) (sdl:get-font-height :font big-font)) 2)))
+                 (loop
+                    (sdl:clear-display (sdl:color))
+                    (sdl:draw-box-* 0 (- y 5) (screen-width) (+ h 10) :color (color 0 30 30))
+                    (sdl:draw-rectangle-* -1 (- y 5) (+ (screen-width) 2) (+ h 10) :color (color 0 60 60))
+                    (center title (- (truncate (- (screen-height) h) 2)
+                                     (sdl:get-font-height :font *font*) 5)
+                            :font *font*
+                            :color (color 0 60 60))
+                    (center text (truncate (- (screen-height) h) 2))
+                    (sdl:update-display)
+                    (let ((ch (key-to-character (wait-for-key) nil)))
+                      (when ch
+                        (case ch
+                          (#\Return (return text))
+                          (#\Backspace (setf text (subseq text 0 (1- (length text)))))
+                          (t (setf text (concatenate 'string text (string ch))))))))))
              (menu (options &key draw-fn (yofs 0) (key 'identity) (selected (first options)))
                (loop
                   (sdl:clear-display (gray 0))
@@ -1372,7 +1393,17 @@ non-colliding position. Return T if a collision occurred."
                  (when p
                    (do-keys (symbol-value p)))))
              (do-network ()
-               (menu '(:start-server :connect-to-server) :key #'stringize)))
+               (case (menu '(:start-server :connect-to-server) :key #'stringize)
+                 (:start-server
+                  (do-server (make-default-map)))
+                 (:connect-to-server
+                  (setf host (input "Host" host))
+                  (when (eq (do-client host) :error)
+                    (sdl:clear-display (sdl:color))
+                    (center "Failed To Connect To:" 300)
+                    (center host 350)
+                    (sdl:update-display)
+                    (wait-for-key))))))
       (loop
          (catch 'main-menu
            (ecase (make-selection)
@@ -1629,20 +1660,18 @@ non-colliding position. Return T if a collision occurred."
          (sdl:update-display)
 	 (process-events)))))
 
-(defun bratwurst-server (&optional (port 10005))
-  (catch 'quit
-    (init-controls)
-    (with-graphics (1024 768)
-      (let ((server (start-server (list (aref *controls* 1)
-					(aref *controls* 2)
-					(aref *controls* 3))
-				  nil port)))
-	;; the player on the server always uses controls 0 but we
-	;; dont want any of the other keys to change things, so
-	;; when we process events and fill network-controls this
-	;; allows controls 0 to be updated. it's a hack.
-	(setf (aref *network-controls* 0) (aref *controls* 0))
-	(do-game (choose-stage server) (make-default-map) server))
+(defun do-server (map &optional (port 10005))
+  (let ((server (start-server (list (aref *controls* 1)
+                                    (aref *controls* 2)
+                                    (aref *controls* 3))
+                              nil port)))
+    ;; the player on the server always uses controls 0 but we
+    ;; dont want any of the other keys to change things, so
+    ;; when we process events and fill network-controls this
+    ;; allows controls 0 to be updated. it's a hack.
+    (setf (aref *network-controls* 0) (aref *controls* 0))
+    (unwind-protect
+         (do-game (choose-stage server) map server)
       (close-server))))
 
 (defun bratwurst-dedicated-server (&optional (port 10005))
@@ -1659,12 +1688,11 @@ non-colliding position. Return T if a collision occurred."
 	      (do-game (choose-stage server) (make-default-map) server))
 	 (close-server)))))
 
-(defun bratwurst-client (host &optional (port 10005))
-  (catch 'quit
-    (init-controls)
-    (let ((server (cl-start-client host (aref *network-controls* 0) port)))
-      (with-graphics (1024 768)
-	   (do-game (choose-stage server) (make-default-map) server)))))
+(defun do-client (host &optional (port 10005))
+  (let ((server (cl-start-client host (aref *network-controls* 0) port)))
+    (if server
+        (do-game (choose-stage server) (make-default-map) server)
+        :error)))
   
 (defun bratwurst ()
   "play a game of bratwurst with N players"

@@ -6,6 +6,26 @@
 
 (in-package :bratwurst)
 
+#+lispworks
+(defun socket-status (socket)
+  (comm::socket-listen (usocket:socket socket)))
+
+#+sbcl
+(defun socket-status (socket)
+  (sb-alien:with-alien ((rfds (sb-alien:struct sb-unix:fd-set)))
+    (sb-unix:fd-zero rfds)
+    (sb-unix:fd-set
+     (sb-bsd-sockets:socket-file-descriptor socket)
+     rfds)
+    (multiple-value-bind (count err)
+        (sb-unix:unix-fast-select
+         (1+ (sb-bsd-sockets:socket-file-descriptor socket))
+         (sb-alien:addr rfds) nil nil
+         0 0)
+      (unless (zerop err)
+        (error "ahhh fuck ~a" err))
+      (plusp count))))
+        
 (defstruct cl-server
   socket controls
   ;; a list of indexes into *controls* for the other players. this is
@@ -59,7 +79,7 @@
   
 (defun sv-send-packet-to (client packet)
   (format (sv-client-socket client) "~s" packet)
-  (finish-output (sv-client-socket server)))
+  (force-output (sv-client-socket client)))
 
 (defun sv-send-packet (server packet)
   (loop for i in (sv-server-clients server) do
@@ -85,7 +105,8 @@
   (sv-send-packet server `(:game-start)))
 
 (defun sv-check-for-new-clients (server selections)
-  (when (listen (sv-server-socket server))
+  (when (socket-status (usocket:socket (sv-server-socket server)))
+    (print 'ya)
     (let* ((socket (usocket:socket-accept (sv-server-socket server)))
 	   (controls (pop (sv-server-free-controls server)))
 	   (client (make-sv-client
@@ -127,7 +148,7 @@
 (defun sv-read-client-packets (server client)
   "packets are lists. car is the id and the rest is data."
   (declare (ignore server))
-  (when (listen (sv-client-socket client))
+  (when (listen (usocket:socket-stream (sv-client-socket client)))
     (handler-case
         (sv-handle-client-packet client (read (sv-client-socket client)))
       (end-of-file ()
@@ -147,7 +168,7 @@
 
 (defun cl-send-heartbeat (server)
   (write-string "(:heartbeat)" (cl-server-socket server))
-  (finish-output (cl-server-socket server)))
+  (force-output (cl-server-socket server)))
 
 (defun cl-send-controls (server)
   (let ((c (cl-server-controls server)))
@@ -157,7 +178,7 @@
 	    (controls-forward c)
 	    (controls-special c)
 	    (controls-shoot c))
-    (finish-output (cl-server-socket server))))
+    (force-output (cl-server-socket server))))
 
 (defun cl-handle-server-packet (server packet)
   (let ((type (first packet))
@@ -189,7 +210,7 @@
        (throw 'done t)))))
 
 (defun cl-read-packets (server)
-  (when (listen (cl-server-socket server))
+  (when (listen (usocket:socket-stream (cl-server-socket server)))
     (cl-handle-server-packet server (read (cl-server-socket server)))
     t))
 
@@ -198,8 +219,13 @@
 
 (defun cl-start-client (host controls port)
   (format t "Attempting to connect to server ~S:~D~%" host port)
-  (setf *server* (make-cl-server :socket (usocket:socket-connect port host)
-				 :controls controls
-				 :players nil))
-  (format t "Connected!~%")
-  *server*)
+  (let ((socket (handler-case
+                    (usocket:socket-connect host port :timeout 10)
+                  (usocket:socket-error ()
+                    nil))))
+    (when socket
+      (setf *server* (make-cl-server :socket socket
+                                     :controls controls
+                                     :players nil))
+      (format t "Connected!~%")
+      *server*)))
