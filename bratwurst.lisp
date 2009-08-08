@@ -1316,6 +1316,12 @@ non-colliding position. Return T if a collision occurred."
                                                        color))))
              (stringize (symbol)
                (substitute #\Space #\- (string-capitalize symbol)))
+             (message (line1 line2)
+               (sdl:clear-display (sdl:color))
+               (center line1 300)
+               (center line2 350)
+               (sdl:update-display)
+               (wait-for-key))
              (input (title &optional (text ""))
                (let* ((h (sdl:get-font-height :font big-font))
                       (y (truncate (- (screen-height) (sdl:get-font-height :font big-font)) 2)))
@@ -1395,15 +1401,12 @@ non-colliding position. Return T if a collision occurred."
              (do-network ()
                (case (menu '(:start-server :connect-to-server) :key #'stringize)
                  (:start-server
-                  (do-server (make-default-map)))
+                  (when (eq (do-server (make-default-map)) :error)
+                    (message "Failed To Start Server" "")))
                  (:connect-to-server
                   (setf host (input "Host" host))
                   (when (eq (do-client host) :error)
-                    (sdl:clear-display (sdl:color))
-                    (center "Failed To Connect To:" 300)
-                    (center host 350)
-                    (sdl:update-display)
-                    (wait-for-key))))))
+                    (message "Failed To Connect To:" host))))))
       (loop
          (catch 'main-menu
            (ecase (make-selection)
@@ -1669,10 +1672,13 @@ non-colliding position. Return T if a collision occurred."
     ;; dont want any of the other keys to change things, so
     ;; when we process events and fill network-controls this
     ;; allows controls 0 to be updated. it's a hack.
-    (setf (aref *network-controls* 0) (aref *controls* 0))
-    (unwind-protect
-         (do-game (choose-stage server) map server)
-      (close-server))))
+    (if server
+        (progn
+          (setf (aref *network-controls* 0) (aref *controls* 0))
+          (unwind-protect
+               (do-game (choose-stage server) map server)
+            (close-server server)))
+        :error)))
 
 (defun bratwurst-dedicated-server (&optional (port 10005))
   (catch 'quit
@@ -1691,7 +1697,9 @@ non-colliding position. Return T if a collision occurred."
 (defun do-client (host &optional (port 10005))
   (let ((server (cl-start-client host (aref *network-controls* 0) port)))
     (if server
-        (do-game (choose-stage server) (make-default-map) server)
+        (unwind-protect
+            (do-game (choose-stage server) (make-default-map) server)
+          (close-client server))
         :error)))
   
 (defun bratwurst ()

@@ -8,7 +8,7 @@
 
 #+lispworks
 (defun socket-status (socket)
-  (comm::socket-listen (usocket:socket socket)))
+  (comm::socket-listen socket))
 
 #+sbcl
 (defun socket-status (socket)
@@ -65,21 +65,26 @@
   (typep server 'cl-server))
 
 (defun start-server (free-controls dedicated-p port)
-  (setf *server* (make-sv-server :socket (usocket:socket-listen usocket:*wildcard-host* port :backlog 4)
-				 :free-controls free-controls
-				 :clients nil
-				 :dedicated-p dedicated-p))
-  (format t "Waiting for connections on ~S:~D~%"
-	  (usocket:get-local-name (sv-server-socket *server*))
-	  (usocket:get-local-port (sv-server-socket *server*)))
-  *server*)
+  (setf *server* (handler-case
+                     (make-sv-server :socket (usocket:socket-listen usocket:*wildcard-host* port :backlog 4)
+                                     :free-controls free-controls
+                                     :clients nil
+                                     :dedicated-p dedicated-p)
+                   (usocket:socket-error (c)
+                     (format t "error starting server: ~a~%" c)
+                     nil)))
+  (when *server*
+    (format t "Waiting for connections on ~S:~D~%"
+            (usocket:get-local-name (sv-server-socket *server*))
+            (usocket:get-local-port (sv-server-socket *server*)))
+    *server*))
 
-(defun close-server ()
-  (usocket:socket-close (sv-server-socket *server*)))
+(defun close-server (&optional (server *server*))
+  (usocket:socket-close (sv-server-socket server)))
   
 (defun sv-send-packet-to (client packet)
-  (format (sv-client-socket client) "~s" packet)
-  (force-output (sv-client-socket client)))
+  (format (usocket:socket-stream (sv-client-socket client)) "~s" packet)
+  (force-output (usocket:socket-stream (sv-client-socket client))))
 
 (defun sv-send-packet (server packet)
   (loop for i in (sv-server-clients server) do
@@ -148,9 +153,12 @@
 (defun sv-read-client-packets (server client)
   "packets are lists. car is the id and the rest is data."
   (declare (ignore server))
-  (when (listen (usocket:socket-stream (sv-client-socket client)))
+;;   (print (list 'sv-read-client-packets
+;;                (listen (usocket:socket-stream (sv-client-socket client)))
+;;                (socket-status (usocket:socket (sv-client-socket client)))))
+  (when (socket-status (usocket:socket (sv-client-socket client)))
     (handler-case
-        (sv-handle-client-packet client (read (sv-client-socket client)))
+        (sv-handle-client-packet client (read (usocket:socket-stream (sv-client-socket client))))
       (end-of-file ()
         (let ((socket (sv-client-socket client)))
           (format t "Client from ~S:~D Disconnected!~%"
@@ -167,18 +175,18 @@
        (loop while (sv-read-client-packets server i))))
 
 (defun cl-send-heartbeat (server)
-  (write-string "(:heartbeat)" (cl-server-socket server))
-  (force-output (cl-server-socket server)))
+  (write-string "(:heartbeat)" (usocket:socket-stream (cl-server-socket server)))
+  (force-output (usocket:socket-stream (cl-server-socket server))))
 
 (defun cl-send-controls (server)
   (let ((c (cl-server-controls server)))
-    (format (cl-server-socket server) "(:controls ~a ~a ~a ~a ~a)"
+    (format (usocket:socket-stream (cl-server-socket server)) "(:controls ~a ~a ~a ~a ~a)"
 	    (controls-left c)
 	    (controls-right c)
 	    (controls-forward c)
 	    (controls-special c)
 	    (controls-shoot c))
-    (force-output (cl-server-socket server))))
+    (force-output (usocket:socket-stream (cl-server-socket server)))))
 
 (defun cl-handle-server-packet (server packet)
   (let ((type (first packet))
@@ -210,18 +218,22 @@
        (throw 'done t)))))
 
 (defun cl-read-packets (server)
-  (when (listen (usocket:socket-stream (cl-server-socket server)))
-    (cl-handle-server-packet server (read (cl-server-socket server)))
+;;   (print (list 'cl-read-packets
+;;                (listen (usocket:socket-stream (cl-server-socket server)))
+;;                (socket-status (usocket:socket (cl-server-socket server)))))
+  (when (socket-status (usocket:socket (cl-server-socket server)))
+    (cl-handle-server-packet server (read (usocket:socket-stream (cl-server-socket server))))
     t))
 
 (defun cl-blocking-read-packets (server)
-  (cl-handle-server-packet server (read (cl-server-socket server))))
+  (cl-handle-server-packet server (read (usocket:socket-stream (cl-server-socket server)))))
 
 (defun cl-start-client (host controls port)
   (format t "Attempting to connect to server ~S:~D~%" host port)
   (let ((socket (handler-case
-                    (usocket:socket-connect host port :timeout 10)
-                  (usocket:socket-error ()
+                    (usocket:socket-connect host port #|:timeout 10|#)
+                  (usocket:socket-error (c)
+                    (format t "error connecting: ~a~%" c)
                     nil))))
     (when socket
       (setf *server* (make-cl-server :socket socket
@@ -229,3 +241,6 @@
                                      :players nil))
       (format t "Connected!~%")
       *server*)))
+
+(defun close-client (server)
+  (usocket:socket-close (cl-server-socket server)))
