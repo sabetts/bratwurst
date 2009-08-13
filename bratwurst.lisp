@@ -1255,14 +1255,13 @@ non-colliding position. Return T if a collision occurred."
 				     t))
 				 (sv-server-clients server))))
 	       ((client-p server)
-		(loop
-                   for i = (cl-read-packet server) while i
-                   do (finish-output)
-                     (ecase (first i)
-                        (:choose-stage
-                         (setf players (second i)))
-                        (:game-start
-                         (throw 'done t))))
+                (with-cl-packets (server)
+                  (:choose-stage
+                   (setf players (second %packet%)))
+                  (:game-start
+                   (throw 'done t))
+                  (:disconnect
+                   (throw 'main-menu t)))
                 ;; read for keyboard events and send update if there are changes
                 (let ((bk (copy-structure (elt *controls* 0))))
                   (process-events (vector (aref *controls* 0)))
@@ -1683,7 +1682,9 @@ non-colliding position. Return T if a collision occurred."
                    (:state
                     (restore-state *state* (cdr %packet%)))
                    (:winner
-                    (throw 'done (elt (state-players *state*) (second %packet%)))))
+                    (throw 'done (elt (state-players *state*) (second %packet%))))
+                   (:disconnect
+                    (throw 'main-menu t)))
                  (step-game-state *state*))))
     ;; tell'em the deal
     (if winner

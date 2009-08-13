@@ -136,14 +136,16 @@
 ;;; Client
 
 (defun cl-send-controls (server c)
-  (format t "send: (:controls ~s)~%" c)
   (format (usocket:socket-stream (cl-server-socket server)) "(:controls ~s)~%" c)
   (force-output (usocket:socket-stream (cl-server-socket server))))
 
 (defun cl-read-packet (server)
   (when (socket-status (usocket:socket (cl-server-socket server)))
-    (let ((*package* (find-package :bratwurst)))
-      (read (usocket:socket-stream (cl-server-socket server))))))
+    (handler-case
+        (let ((*package* (find-package :bratwurst)))
+          (read (usocket:socket-stream (cl-server-socket server))))
+      (end-of-file ()
+        `(:disconnect)))))
 
 (defmacro with-cl-packets ((server) &body body)
   `(loop for %packet% = (cl-read-packet ,server)
