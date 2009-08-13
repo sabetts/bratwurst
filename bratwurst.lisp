@@ -114,7 +114,7 @@
   (make-controls :left :sdl-key-left
                  :right :sdl-key-right
                  :forward :sdl-key-up
-                 :special :sdl-key-shiftl
+                 :special :sdl-key-lshift
                  :shoot :sdl-key-space))
 
 (defvar *player-2-keys*
@@ -1180,7 +1180,7 @@ non-colliding position. Return T if a collision occurred."
 
 (defun restore-missile (obj dump players)
   (restore-slots obj dump 'x 'y 'vx 'vy 'angle 'timer)
-  (setf (missile-target obj) (elt (missile-target dump) players)
+  (setf (missile-target obj) (elt players (missile-target dump))
         (missile-color obj) (restore-color (missile-color dump))))
 
 (defun dump-choose-state (state)
@@ -1544,8 +1544,8 @@ non-colliding position. Return T if a collision occurred."
 
 (defun dump-state (state)
   `(:state ,(mapcar 'dump-bullet (state-bullets state))
-           ,(mapcar 'dump-missile (state-missiles state))
-           ,(mapcar 'dump-rocket (state-rockets state))
+           ,(mapcar (lambda (r) (dump-missile r (state-players state))) (state-missiles state))
+           ,(mapcar (lambda (r) (dump-rocket r (state-players state))) (state-rockets state))
            ,(mapcar 'dump-player (state-players state))
            ,*controls*))
 
@@ -1553,7 +1553,8 @@ non-colliding position. Return T if a collision occurred."
   (setf (slot-value obj 'color) (restore-color (slot-value obj 'color))))
 
 (defun fill-in-player (obj slot players)
-  (setf (slot-value obj slot) (elt (slot-value obj slot) players)))
+  (setf (slot-value obj slot) (when (slot-value obj slot)
+                                (elt players (slot-value obj slot)))))
   
 (defun restore-state (state dump)
   (setf (state-bullets state) (first dump)
@@ -1725,6 +1726,7 @@ non-colliding position. Return T if a collision occurred."
       (if winner
           (draw-text 320 240 "You Are The Winner!" (player-color winner))
           (draw-text 320 240 "Draw Game!"))
+      (sdl:update-display)
       (loop until (eq (wait-for-key) :sdl-key-escape)))))
 
 (defun do-dedicated-server-game (players map server)
