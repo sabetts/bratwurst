@@ -1645,12 +1645,13 @@ non-colliding position. Return T if a collision occurred."
        do (draw-state *state*)
           (setf time (blit-buffers time))
           (process-events *controls*)
-       while (step-game-state *state*))
+       until (step-game-state *state*))
     ;; tell'em the deal
     (let ((player (first (alive-players (state-players *state*)))))
       (if player
           (draw-text 320 240 "You Are The Winner!" (player-color player))
           (draw-text 320 240 "Draw Game!")))
+    (sdl:update-display)
     (loop until (eq (wait-for-key) :sdl-key-escape))))
 
 (defun do-client-game (players map server)
