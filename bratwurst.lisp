@@ -36,10 +36,6 @@
 ;;
 ;;; Code:
 
-(defpackage #:bratwurst
-  (:use cl)
-  (:export #:bratwurst #:bratwurst-server #:bratwurst-dedicated-server #:bratwurst-client))
-
 (in-package #:bratwurst)
 
 (defvar *resource-dir* #p"/Users/sabetts/src/bratwurst/")
@@ -115,10 +111,10 @@
    (controls-shoot controls)))
 
 (defvar *player-1-keys*
-  (make-controls :left :sdl-key-h
-                 :right :sdl-key-n
-                 :forward :sdl-key-c
-                 :special :sdl-key-t
+  (make-controls :left :sdl-key-left
+                 :right :sdl-key-right
+                 :forward :sdl-key-up
+                 :special :sdl-key-shiftl
                  :shoot :sdl-key-space))
 
 (defvar *player-2-keys*
@@ -179,7 +175,8 @@
 (defstruct state
   bullets missiles rockets
   status-bar-needs-updating
-  players map)
+  players map
+  frame)
 
 ;; i dont know how time consuming this is but it conses a lot that's
 ;; for sure.
@@ -1113,6 +1110,86 @@ non-colliding position. Return T if a collision occurred."
     (sdl:draw-box-* (- width thickness) 0 thickness height :color color :surface s)
     s))
 
+(defun dump-color (color)
+  `(:color ,(sdl:r color) ,(sdl:g color) ,(sdl:b color)))
+
+(defun restore-color (dump)
+  (assert (eq (first dump) :color))
+  (sdl:color :r (second dump)
+             :g (third dump)
+             :b (fourth dump)))
+
+(defmacro defdump (class (&rest slots) &optional dump-body restore-body)
+  (let ((p (gensym "P"))
+        (i (gensym "I")))
+    `(progn
+       (defun ,(intern (format nil "~a-~a" :dump class)) (obj)
+         (let ((new (loop with ,p = (,(intern (format nil "~a-~a" :make class)))
+                       for ,i in ',slots
+                       do (setf (slot-value ,p ,i) (slot-value obj ,i))
+                       finally (return ,p))))
+           ,dump-body
+           new))
+       (defun ,(intern (format nil "~a-~a" :restore class)) (obj dump)
+         (loop for ,i in ',slots
+            do (setf (slot-value obj ,i) (slot-value dump ,i)))
+         ,restore-body))))
+
+(defdump player
+    (start-x start-y last-x last-y
+             last-angle angle x y vx vy
+             health ammo special special-cooldown special-active cool-down
+             lives last-good))
+
+(defdump bullet (x y vx vy)
+  (setf (bullet-color new) (dump-color (bullet-color obj)))
+  (setf (bullet-color obj) (restore-color (bullet-color dump))))
+
+;; (defdump missile 
+;;     x y vx vy angle target timer)
+
+;; (defdump rocket
+;;     x y vx vy angle owner)
+
+(defun dump-slots (obj &rest slots)
+  (let ((new (make-instance (type-of obj))))
+    (loop for s in slots do
+         (setf (slot-value new s) (slot-value obj s)))
+    new))
+
+(defun restore-slots (obj dump &rest slots)
+  (loop for s in slots do
+       (setf (slot-value obj s) (slot-value dump s))))
+
+(defun dump-rocket (obj players)
+  (let ((new (dump-slots obj 'x 'y 'vx 'vy 'angle)))
+    (setf (rocket-owner new) (position (rocket-owner obj) players)
+          (rocket-color new) (dump-color (rocket-color obj)))
+    new))
+
+(defun restore-rocket (obj dump players)
+  (restore-slots obj dump)
+  (setf (rocket-owner obj) (elt players (rocket-owner dump))
+        (rocket-color obj) (restore-color (rocket-color dump))))
+
+(defun dump-missile (obj players)
+  (let ((new (dump-slots obj 'x 'y 'vx 'vy 'angle 'timer)))
+    (setf (missile-target new) (position (missile-target obj) players)
+          (missile-color new) (dump-color (missile-color obj)))
+    new))
+
+(defun restore-missile (obj dump players)
+  (restore-slots obj dump 'x 'y 'vx 'vy 'angle 'timer)
+  (setf (missile-target obj) (elt (missile-target dump) players)
+        (missile-color obj) (restore-color (missile-color dump))))
+
+(defun dump-choose-state (state)
+  (list :choose-stage state))
+
+(defun restore-choose-state (packet)
+  (assert (eq (first packet) :choose-stage))
+  (second packet))
+
 (defun choose-stage (&optional server)
   "Return a list of players. server could be a cl-server or an sv-server."
   (macrolet ((forward (slot list player)
@@ -1140,7 +1217,8 @@ non-colliding position. Return T if a collision occurred."
              (xs `(,padx ,(+ width (* padx 2)) padx (+ width (* padx 2))))
              (ys `(,pady ,pady ,(+ height (* pady 2)) ,(+ height (* pady 2))))
              (start (get-internal-real-time))
-             (bk-controls (vector nil nil nil nil))
+             (bk-players nil)
+             (bk-controls (make-empty-controls-array 4))
              (bubbles (make-bubbles)))
 	(catch 'done
 	  (loop
@@ -1151,17 +1229,22 @@ non-colliding position. Return T if a collision occurred."
 	     ;; processing differently.
 	     (cond 
 	       ((server-p server)
+                ;; send the new choose state if anything changed
+                (unless (equalp players bk-players)
+		  (sv-send-packet server (dump-choose-state players))
+                  (setf bk-players (mapcar (lambda (x) (when x (copy-structure x))) players)))
 		;; anyone joined the game?
-		(let ((new (sv-check-for-new-clients server players)))
-		  (when new
-		    (setf (nth (controls-id new) players) (make-ship-selection :ship 0))))
-		;; backup the controls so we can see if any changed.
-		(loop for i from 0 below 4 do
-		     (setf (aref bk-controls i) (copy-structure (aref *controls* i))))
+		(let ((client (sv-check-for-new-clients server)))
+		  (when client
+		    (setf (nth (controls-id (sv-client-controls client)) players) (make-ship-selection :ship 0))
+                    ;; tell the joining player about everyone else
+                    (sv-send-packet-to client (dump-choose-state players))))
 		;; check for key events
+                (with-sv-packets (server)
+                  (:controls
+                   (import-controls (sv-client-controls %client%) (second %packet%))))
 		(unless (sv-server-dedicated-p server)
-		  (network-process-events))
-		(sv-read-packets server)
+		  (process-events (vector (aref *controls* 0))))
 		;; if someone disconnected then return their controls
 		;; and zap their ship selection
 		(setf (sv-server-clients server)
@@ -1170,34 +1253,26 @@ non-colliding position. Return T if a collision occurred."
 				     (push (sv-client-controls i) (sv-server-free-controls server))
 				     (setf (nth (controls-id (sv-client-controls i)) players) nil)
 				     t))
-				 (sv-server-clients server)))
-		;; send a controls packet if anything changed
-		(unless (loop for j from 0 below 4
-			   always (equalp (aref bk-controls j) (aref *controls* j)))
-		  (sv-send-controls server 0))
-		)
+				 (sv-server-clients server))))
 	       ((client-p server)
-		;; read only 1 packet at a time. this avoids the
-		;; problem of reading 2 controls updates.
-		(cl-read-packets server)
-		;; check for new players
-		(loop for j in (cl-server-players server) do
-		     (unless (nth (controls-id j) players)
-		       (setf (nth (controls-id j) players) (make-ship-selection :ship 0))))
-		;; check for selections (happens when we first join)
-		(when (cl-server-others server)
-		  (setf players (cl-server-others server)
-			(cl-server-others server) nil))
+		(loop
+                   for i = (cl-read-packet server) while i
+                   do (finish-output)
+                     (ecase (first i)
+                        (:choose-stage
+                         (setf players (second i)))
+                        (:game-start
+                         (throw 'done t))))
                 ;; read for keyboard events and send update if there are changes
-                (let ((bk (copy-structure (cl-server-controls server))))
-                  (network-process-events)
-                  (unless (equalp bk (cl-server-controls server))
-                    (cl-send-controls server))))
+                (let ((bk (copy-structure (elt *controls* 0))))
+                  (process-events (vector (aref *controls* 0)))
+                  (unless (equalp bk (elt *controls* 0))
+                    (cl-send-controls server (elt *controls* 0)))))
 	       (t
 		;; let players tap in
 		(loop for i from 0 below 4 do
 		     (setf (aref bk-controls i) (copy-structure (aref *controls* i))))
-		(process-events)
+		(process-events *controls*)
 		(loop for i in players
 		   for j from 0 do
 		   (when (and (null i)
@@ -1209,50 +1284,51 @@ non-colliding position. Return T if a collision occurred."
 		for color in colors
 		for x in xs
 		for y in ys when i do
-		(if (ship-selection-wait i)
-		    (setf (ship-selection-wait i) (or (controls-right (aref *controls* n))
-						      (controls-left (aref *controls* n))
-						      (controls-shoot (aref *controls* n))
-						      (controls-special (aref *controls* n))))
-		    (progn
-		      ;;(format t "here1 ~a ~a ~a~%" angle n *controls*)
-		      (setf (ship-selection-wait i)
-			    (or (controls-right (aref *controls* n))
-				(controls-left (aref *controls* n))
-				(controls-shoot (aref *controls* n))
-				(controls-special (aref *controls* n))))
-		      (cond
-			;; select ship
-			((null (ship-selection-special i))
-			 (cond ((controls-right (aref *controls* n))
-				(forward ship-selection-ship (ships i) i))
-			       ((controls-left (aref *controls* n))
-				(backward ship-selection-ship (ships i) i))
-			       ((controls-shoot (aref *controls* n))
-				(setf (ship-selection-special i) 0))))
-			;; select special
-			((null (ship-selection-special-pt i))
-			 (cond ((controls-right (aref *controls* n))
-				(forward ship-selection-special (specials i) i))
-			       ((controls-left (aref *controls* n))
-				(backward ship-selection-special (specials i) i))
-			       ((controls-shoot (aref *controls* n))
-				(setf (ship-selection-special-pt i) 0))))
-			;; special pts
-			((null (ship-selection-confirm i))
-			 (cond ((controls-right (aref *controls* n))
-				(forward ship-selection-special-pt (special-pts i) i))
-			       ((controls-left (aref *controls* n))
-				(backward ship-selection-special-pt (special-pts i) i))
-			       ((controls-shoot (aref *controls* n))
-				(setf (ship-selection-confirm i) 0))))
-			;; wait for them to hit something
-			(t
-			 (unless (eq (ship-selection-confirm i) :done)
-			   (cond ((controls-right (aref *controls* n))
-				  (reset-selection i))
-				 ((controls-left (aref *controls* n))
-				  (setf (ship-selection-confirm i) :done))))))))
+                (unless (client-p server)
+                  (if (ship-selection-wait i)
+                      (setf (ship-selection-wait i) (or (controls-right (aref *controls* n))
+                                                        (controls-left (aref *controls* n))
+                                                        (controls-shoot (aref *controls* n))
+                                                        (controls-special (aref *controls* n))))
+                      (progn
+                        ;;(format t "here1 ~a ~a ~a~%" angle n *controls*)
+                        (setf (ship-selection-wait i)
+                              (or (controls-right (aref *controls* n))
+                                  (controls-left (aref *controls* n))
+                                  (controls-shoot (aref *controls* n))
+                                  (controls-special (aref *controls* n))))
+                        (cond
+                          ;; select ship
+                          ((null (ship-selection-special i))
+                           (cond ((controls-right (aref *controls* n))
+                                  (forward ship-selection-ship (ships i) i))
+                                 ((controls-left (aref *controls* n))
+                                  (backward ship-selection-ship (ships i) i))
+                                 ((controls-shoot (aref *controls* n))
+                                  (setf (ship-selection-special i) 0))))
+                          ;; select special
+                          ((null (ship-selection-special-pt i))
+                           (cond ((controls-right (aref *controls* n))
+                                  (forward ship-selection-special (specials i) i))
+                                 ((controls-left (aref *controls* n))
+                                  (backward ship-selection-special (specials i) i))
+                                 ((controls-shoot (aref *controls* n))
+                                  (setf (ship-selection-special-pt i) 0))))
+                          ;; special pts
+                          ((null (ship-selection-confirm i))
+                           (cond ((controls-right (aref *controls* n))
+                                  (forward ship-selection-special-pt (special-pts i) i))
+                                 ((controls-left (aref *controls* n))
+                                  (backward ship-selection-special-pt (special-pts i) i))
+                                 ((controls-shoot (aref *controls* n))
+                                  (setf (ship-selection-confirm i) 0))))
+                          ;; wait for them to hit something
+                          (t
+                           (unless (eq (ship-selection-confirm i) :done)
+                             (cond ((controls-right (aref *controls* n))
+                                    (reset-selection i))
+                                   ((controls-left (aref *controls* n))
+                                    (setf (ship-selection-confirm i) :done)))))))))
 		;; draw the state
                 (unless (dedicated-server-p server)
                   (sdl:draw-box-* x y width height :color (sdl:color :r 0 :g 0 :b 0) :alpha 128)
@@ -1304,7 +1380,8 @@ non-colliding position. Return T if a collision occurred."
   (let ((title-font (open-font "title" 100))
         (big-font (open-font "font" 56))
         (fire (make-fire-bubbles (- (screen-width) 50) 300 20))
-        (host ""))
+        (host "")
+        (port 10005))
     (labels ((center (txt y &key selected (color (gray 255)) (font big-font))
                (when (plusp (length txt))
                  (sdl:draw-string-blended-* txt
@@ -1322,7 +1399,7 @@ non-colliding position. Return T if a collision occurred."
                (center line2 350)
                (sdl:update-display)
                (wait-for-key))
-             (input (title &optional (text ""))
+             (input (title &optional (text "") (valid-key-function (constantly t)))
                (let* ((h (sdl:get-font-height :font big-font))
                       (y (truncate (- (screen-height) (sdl:get-font-height :font big-font)) 2)))
                  (loop
@@ -1339,8 +1416,9 @@ non-colliding position. Return T if a collision occurred."
                       (when ch
                         (case ch
                           (#\Return (return text))
-                          (#\Backspace (setf text (subseq text 0 (1- (length text)))))
-                          (t (setf text (concatenate 'string text (string ch))))))))))
+                          (#\Backspace (when (plusp (length text)) (setf text (subseq text 0 (1- (length text))))))
+                          (t (when (funcall valid-key-function ch)
+                               (setf text (concatenate 'string text (string ch)))))))))))
              (menu (options &key draw-fn (yofs 0) (key 'identity) (selected (first options)))
                (loop
                   (sdl:clear-display (gray 0))
@@ -1401,16 +1479,18 @@ non-colliding position. Return T if a collision occurred."
              (do-network ()
                (case (menu '(:start-server :connect-to-server) :key #'stringize)
                  (:start-server
-                  (when (eq (do-server (make-default-map)) :error)
+                  (setf port (parse-integer (input "Port" (prin1-to-string port) 'digit-char-p)))
+                  (when (eq (do-server (make-default-map) port) :error)
                     (message "Failed To Start Server" "")))
                  (:connect-to-server
-                  (setf host (input "Host" host))
-                  (when (eq (do-client host) :error)
+                  (setf host (input "Host" host)
+                        port (parse-integer (input "Port" (prin1-to-string port) 'digit-char-p)))
+                  (when (eq (do-client host port) :error)
                     (message "Failed To Connect To:" host))))))
       (loop
          (catch 'main-menu
            (ecase (make-selection)
-             (:play-game (do-game (choose-stage) (make-default-map)))
+             (:play-game (do-normal-game (choose-stage) (make-default-map)))
              (:networking (do-network))
              (:options (do-options))
              ((nil :quit) (throw 'quit nil))))))))
@@ -1462,13 +1542,94 @@ non-colliding position. Return T if a collision occurred."
        when (> (player-lives i) 0)
        collect i))
 
-(defun do-game (players map &optional server)
-  (let* ((x 0)
-	 (y 0)
-	 (scale 1)
-	 (frames 0)
-	 (start (get-internal-real-time))
-	 (bk-controls (make-empty-controls-array 4))
+(defun dump-state (state)
+  `(:state ,(mapcar 'dump-bullet (state-bullets state))
+           ,(mapcar 'dump-missile (state-missiles state))
+           ,(mapcar 'dump-rocket (state-rockets state))
+           ,(mapcar 'dump-player (state-players state))
+           ,*controls*))
+
+(defun fill-in-color (obj)
+  (setf (slot-value obj 'color) (restore-color (slot-value obj 'color))))
+
+(defun fill-in-player (obj slot players)
+  (setf (slot-value obj slot) (elt (slot-value obj slot) players)))
+  
+(defun restore-state (state dump)
+  (setf (state-bullets state) (first dump)
+        (state-missiles state) (second dump)
+        (state-rockets state) (third dump))
+  (mapc 'fill-in-color (state-rockets state))
+  (mapc 'fill-in-color (state-missiles state))
+  (mapc 'fill-in-color (state-bullets state))
+  (mapc (lambda (o) (fill-in-player o 'owner (state-players state))) (state-rockets state))
+  (mapc (lambda (o) (fill-in-player o 'target (state-players state))) (state-missiles state))
+  (mapc 'restore-player (state-players state) (fourth dump))
+  (map nil 'import-controls *controls* (fifth dump)))
+
+(defun step-game-state (state)
+  "Return non-NIL when the game is over."
+  (incf (state-frame state))
+  (let ((livers (alive-players (state-players state))))
+    (dolist (i livers)
+      (setf (player-last-x i) (player-x i)
+            (player-last-y i) (player-y i)
+            (player-last-angle i) (player-angle i)
+            (player-solidified i) nil)
+      (update-player i (state-map state) (state-players state)))
+    (update-for-player-player-collision livers)
+    (update-bullets livers (state-map state))
+    (update-rockets livers (state-map state))
+    (update-missiles livers (state-map state))
+    ;; keep playing?
+    (<= (length (alive-players (state-players state))) 1)))
+
+(defun draw-state (state)
+  (let ((livers (alive-players (state-players state))))
+    ;; calculate what part of the world to display
+    (multiple-value-bind (maxx maxy minx miny)
+        (loop for i in livers 
+           maximize (player-x i) into maxx
+           maximize (player-y i) into maxy
+           minimize (player-x i) into minx
+           minimize (player-y i) into miny
+           finally (return (values maxx maxy minx miny)))
+      (let* ((rx (max (- maxx minx) *map-max-zoom*))
+             (ry (max (- maxy miny) *map-max-zoom*))
+             (width (* (game-area-width) 0.75))
+             (height (* (game-area-height) 0.75))
+             (scale (if (> rx (* (/ width height) ry))
+                        (/ width rx)
+                        (/ height ry)))
+             (x (- minx (/ (- (/ (game-area-width) scale) (- maxx minx)) 2))) ;;(+ minx (truncate (- maxx minx) 2))
+             (y (- miny (/ (- (/ (game-area-height) scale) (- maxy miny)) 2)))) ;; (+ miny (truncate (- maxy miny)) 2))))
+        ;; draw 
+        (update-status-bar (state-players state))
+        (draw-map (state-map state) x y scale)
+        (draw-bullets x y scale)
+        (draw-rockets x y scale)
+        (draw-missiles x y scale)
+        (dolist (i livers)
+          (draw-ship (- (player-x i) x) (- (player-y i) y) (player-angle i) scale (player-ship i) (player-color i)))))))
+
+(defun blit-buffers (time)
+  (loop while (< (- (get-internal-real-time) time) (/ internal-time-units-per-second *frame-rate*)))
+  (prog1
+      (get-internal-real-time)
+    (blit-status-bar)
+    (sdl:update-display)
+    (sdl:clear-display (sdl:color))))
+
+(defun init-start-locations (state)
+  (loop for i in (state-players state)
+     for j in (map-starts (state-map state)) do
+     (setf (player-start-x i) (first j)
+           (player-x i) (first j)
+           (player-start-y i) (second j)
+           (player-y i) (second j))))
+
+(defun do-normal-game (players map)
+  (let* ((time (get-internal-real-time))
 	 ;; state is thrown around all over the place so use a dynamic
 	 ;; binding.
 	 (*state* (make-state :bullets nil
@@ -1476,192 +1637,122 @@ non-colliding position. Return T if a collision occurred."
 			      :rockets nil
 			      :status-bar-needs-updating t
 			      :players players
-			      :map map))
-	 ;; this stores the state of the game after the last server
-	 ;; message. If we get a server message for a frame earlier
-	 ;; than the frame we're on then we jump back to this last
-	 ;; state, replay the game up to the server message and
-	 ;; then keep going. If we get a server message after the
-	 ;; frame we're on we simply zip the gamestate forward to
-	 ;; catch up. 
-	 ;;
-	 ;; FIXME: This will cause chunks as the ping time
-	 ;; fluxuates. A better way might be to keep track of the
-	 ;; ping time or average ping time and try to stay that
-	 ;; many seconds behind the server.
-	 (last-server-state (backup-state *state*))
-	 (last-server-state-controls (make-empty-controls-array 4))
+			      :map map
+                              :frame 0))
          (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50)))
-    (copy-controls-to *controls* last-server-state-controls)
-    ;; reset the last server message since we haven't gotten any yet.
-    (when (client-p server)
-      (setf (cl-server-last-frame server) -1))
-    (loop for i in (state-players *state*)
-       for j in (map-starts map) do
-       (setf (player-start-x i) (first j)
-	     (player-x i) (first j)
-	     (player-start-y i) (second j)
-	     (player-y i) (second j)))
-    (catch 'done
-      (labels ((step-game-state ()
-		 (incf frames)
-		 (let ((livers (alive-players (state-players *state*))))
-		   (dolist (i livers)
-		     (setf (player-last-x i) (player-x i)
-			   (player-last-y i) (player-y i)
-			   (player-last-angle i) (player-angle i)
-			   (player-solidified i) nil)
-		     (update-player i map (state-players *state*)))
-		   (update-for-player-player-collision livers)
-		   (update-bullets livers map)
-		   (update-rockets livers map)
-		   (update-missiles livers map)))
-	       ;; draw everything to the double buffer
-	       (draw-game ()
-		 (let ((livers (alive-players (state-players *state*))))
-		   ;; calculate what part of the world to display
-		   (multiple-value-bind (maxx maxy minx miny)
-		       (loop for i in livers 
-			  maximize (player-x i) into maxx
-			  maximize (player-y i) into maxy
-			  minimize (player-x i) into minx
-			  minimize (player-y i) into miny
-			  finally (return (values maxx maxy minx miny)))
-		     (let ((rx (max (- maxx minx) *map-max-zoom*))
-			   (ry (max (- maxy miny) *map-max-zoom*))
-                           (width (* (game-area-width) 0.75))
-                           (height (* (game-area-height) 0.75)))
-		       (setf scale
-			     (if (> rx (* (/ width height) ry))
-				 (/ width rx)
-				 (/ height ry))
-			     x (- minx (/ (- (/ (game-area-width) scale) (- maxx minx)) 2)) ;;(+ minx (truncate (- maxx minx) 2))
-			     y (- miny (/ (- (/ (game-area-height) scale) (- maxy miny)) 2))))) ;; (+ miny (truncate (- maxy miny)) 2))))
-		   ;; draw 
-		   (update-status-bar (state-players *state*))
-		   (draw-map map x y scale)
-		   (draw-bullets x y scale)
-		   (draw-rockets x y scale)
-		   (draw-missiles x y scale)
-		   (dolist (i livers)
-		     (draw-ship (- (player-x i) x) (- (player-y i) y) (player-angle i) scale (player-ship i) (player-color i)))))
-	       ;; blitting the buffers and frame syncing
-	       (blit-buffers ()
-		 (loop while (< (- (get-internal-real-time) start) (/ internal-time-units-per-second *frame-rate*)))
-		 (setf start (get-internal-real-time))
-		 (when (<= (length (alive-players (state-players *state*))) 1)
-		   (throw 'done t))
-		 (blit-status-bar)
-                 (sdl:update-display)
-                 (sdl:clear-display (sdl:color)))
-	       ;; when a packet comes in we gotta shuffle things around
-	       (handle-packet (frame)
-		 (cond ((< (cl-server-last-frame server) frames)
-			;;(format t "here 1 ~a ~a ~a~%" frame (cl-server-last-frame server) frames)
-			;; restore to the last server message and step up to the new server packet
-			(setf *state* last-server-state
-			      frames (cl-server-last-frame server))
-			(copy-controls-to *controls* bk-controls)
-			(copy-controls-to last-server-state-controls *controls*)
-			(dotimes (i (- (cl-server-last-frame server) frame 1))
-			  (step-game-state))
-			;; now restore the controls we got from the
-			;; packet (it could have been a heart beart
-			;; actually) and go to step the state.
-			(copy-controls-to bk-controls *controls*)
-			(copy-controls-to bk-controls last-server-state-controls)
-			(step-game-state)
-			(setf last-server-state (backup-state *state*)))
-		       ((> (cl-server-last-frame server) frames)
-			;;(format t "here 2 ~a ~a ~a~%" frame (cl-server-last-frame server) frames)
-			;; we're behind so catch up.
-			(copy-controls-to *controls* last-server-state-controls)
-			(copy-controls-to bk-controls *controls*)
-			(dotimes (i (- (cl-server-last-frame server) frames 1))
-			  (step-game-state))
-			;; okay we're all set to play the latest packet
-			(copy-controls-to last-server-state-controls *controls*)
-			(step-game-state)
-			(setf last-server-state (backup-state *state*))
-			(assert (= frames (cl-server-last-frame server))))
-		       ;; frames is right on schedule with the server
-		       ;; packet, so get a backup and thats it.
-		       (t
-			;;(format t "here 3 ~a ~a ~a~%" frame (cl-server-last-frame server) frames)
-			(copy-controls-to *controls* last-server-state-controls)
-			(step-game-state)
-			(setf last-server-state (backup-state *state*))))))
-	(loop ;; for i from 1 to 10000 do
-	   ;; read input
-	   (cond
-	     ((server-p server)
-	      ;; backup the controls so we can see if any changed.
-	      (loop for i from 0 below 4 do
-		   (setf (aref bk-controls i) (copy-structure (aref *controls* i))))
-	      ;; check for key events
-	      (unless (sv-server-dedicated-p server)
-		(network-process-events))
-	      (sv-read-all-packets server)
-	      ;; get rid of the disconnects
-	      (setf (sv-server-clients server) (delete t (sv-server-clients server) :key 'sv-client-disconnected-p))
-	      ;; no point in going on if everyone disconnected
-	      (when (and (sv-server-dedicated-p server)
-			 (null (sv-server-clients server)))
-		(throw 'done t))
-	      ;; send a controls packet if anything changed, otherwise heartbeat
-	      (if (loop for j from 0 below 4
-		     always (equalp (aref bk-controls j) (aref *controls* j)))
-		  ;; heartbeats are sent every 10 frames
-		  (when (zerop (mod frames 10))
-		    (sv-send-heartbeat server frames))
-		  (sv-send-controls server frames))
-	      (step-game-state))
-	     ((client-p server)
-	      (let ((frame (cl-server-last-frame server)))
-		;; 		(if (zerop (mod frames 10))
-		;; 		    ;; wait for the server packets to catch
-		;; 		    ;; up. specifically wait for the sync
-		;; 		    ;; packet. that's sent every 10 frames.
-		;; 		    (loop until (<= frames (cl-server-last-frame server)) do
-		;; 			 (copy-controls-to *controls* bk-controls)
-		;; 			 (cl-blocking-read-packets server)
-		;; 			 (handle-packet frame)
-		;; 			 (setf frame (cl-server-last-frame server)))
-		;; read a packet if there's one to read
-		;; 		    (progn
-		;; ugh. we need to backup the controls here
-		(copy-controls-to *controls* bk-controls)
-		(cl-read-packets server)
-		;; did a packet come in?
-		;;(format t "client: ~d server: ~d~%" frame (cl-server-last-frame server))
-		(when (/= frame (cl-server-last-frame server))
-		  (handle-packet frame)))
-		
-	      ;; read for keyboard events and send update if there are changes
-	      (let ((bk (copy-structure (cl-server-controls server))))
-		(network-process-events)
-		(unless (equalp bk (cl-server-controls server))
-		  (cl-send-controls server))))
-	     (t
-	      (process-events)
-	      (step-game-state)))
-	   ;; dedicated servers don't draw anything
-	   (unless (and (server-p server)
-			(sv-server-dedicated-p server))
-	     (draw-game)
-	     (blit-buffers)))))
-    ;;(format t "time elapsed: ~f~%" (/ (- (get-internal-real-time) start) internal-time-units-per-second))
+    (init-start-locations *state*)
+    (loop
+       do (draw-state *state*)
+          (setf time (blit-buffers time))
+          (process-events *controls*)
+       while (step-game-state *state*))
     ;; tell'em the deal
-    (unless (and (server-p server)
-		 (sv-server-dedicated-p server))
-      (let ((player (first (alive-players (state-players *state*)))))
-	(if player
-	    (draw-text 320 240 "You Are The Winner!" (player-color player))
-	    (draw-text 320 240 "Draw Game!")))
-      (loop
-	 (blit-status-bar)
-         (sdl:update-display)
-	 (process-events)))))
+    (let ((player (first (alive-players (state-players *state*)))))
+      (if player
+          (draw-text 320 240 "You Are The Winner!" (player-color player))
+          (draw-text 320 240 "Draw Game!")))
+    (loop until (eq (wait-for-key) :sdl-key-escape))))
+
+(defun do-client-game (players map server)
+  (let* ((time (get-internal-real-time))
+	 ;; state is thrown around all over the place so use a dynamic
+	 ;; binding.
+	 (*state* (make-state :bullets nil
+			      :missiles nil
+			      :rockets nil
+			      :status-bar-needs-updating t
+			      :players players
+			      :map map
+                              :frame 0))
+         (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50))
+         (controls (make-controls))
+         (winner))
+    (init-start-locations *state*)
+    (setf winner
+          (catch 'done
+            (loop do
+                 (draw-state *state*)
+                 (setf time (blit-buffers time))
+                 (let ((bk (copy-structure controls)))
+                   (process-events (vector controls))
+                   (unless (equalp bk controls)
+                     (cl-send-controls server controls)))
+                 (with-cl-packets (server)
+                   (:state
+                    (restore-state *state* (cdr %packet%)))
+                   (:winner
+                    (throw 'done (elt (state-players *state*) (second %packet%)))))
+                 (step-game-state *state*))))
+    ;; tell'em the deal
+    (if winner
+        (draw-text 320 240 "You Are The Winner!" (player-color winner))
+        (draw-text 320 240 "Draw Game!"))
+    (sdl:update-display)
+    (loop until (eq (wait-for-key) :sdl-key-escape))))
+
+(defun do-server-game (players map server)
+  (let* ((time (get-internal-real-time))
+	 ;; state is thrown around all over the place so use a dynamic
+	 ;; binding.
+	 (*state* (make-state :bullets nil
+			      :missiles nil
+			      :rockets nil
+			      :status-bar-needs-updating t
+			      :players players
+			      :map map
+                              :frame 0))
+         (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50))
+         (bk-controls (make-empty-controls-array 4)))
+    (init-start-locations *state*)
+    (loop do
+         (draw-state *state*)
+         (setf time (blit-buffers time))
+
+         (loop for i below 4 do
+              (setf (aref bk-controls i) (copy-structure (aref *controls* i))))
+         (process-events (vector (aref *controls* 0)))
+         (with-sv-packets (server)
+           (:controls
+            (import-controls (sv-client-controls %client%) (second %packet%))))
+         (when (notevery 'equalp bk-controls *controls*)
+           (sv-send-packet server (dump-state *state*)))
+
+         until (step-game-state *state*))
+    (let ((winner (first (alive-players (state-players *state*)))))
+      (sv-send-packet server `(:winner ,(position winner (state-players *state*))))
+      ;; tell'em the deal
+      (if winner
+          (draw-text 320 240 "You Are The Winner!" (player-color winner))
+          (draw-text 320 240 "Draw Game!"))
+      (loop until (eq (wait-for-key) :sdl-key-escape)))))
+
+(defun do-dedicated-server-game (players map server)
+  (let* ((time (get-internal-real-time))
+	 ;; state is thrown around all over the place so use a dynamic
+	 ;; binding.
+	 (*state* (make-state :bullets nil
+			      :missiles nil
+			      :rockets nil
+			      :status-bar-needs-updating t
+			      :players players
+			      :map map
+                              :frame 0))
+         (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50))
+         (bk-controls (make-empty-controls-array 4)))
+    (init-start-locations *state*)
+    (loop do
+         (loop while (< (- (get-internal-real-time) time) (/ internal-time-units-per-second *frame-rate*)))
+         (setf time (get-internal-real-time))
+         (loop for i below 4 do
+              (setf (aref bk-controls i) (copy-structure (aref *controls* i))))
+         (with-sv-packets (server)
+           (:controls
+            (import-controls (sv-client-controls %client%) (second %packet%))))
+         (when (notevery 'equalp bk-controls *controls*)
+           (sv-send-packet server (dump-state *state*)))
+         until (step-game-state *state*))
+    (let ((winner (first (alive-players (state-players *state*)))))
+      (sv-send-packet server `(:winner ,(position winner (state-players *state*)))))))
 
 (defun do-server (map &optional (port 10005))
   (let ((server (start-server (list (aref *controls* 1)
@@ -1676,29 +1767,15 @@ non-colliding position. Return T if a collision occurred."
         (progn
           (setf (aref *network-controls* 0) (aref *controls* 0))
           (unwind-protect
-               (do-game (choose-stage server) map server)
+               (do-server-game (choose-stage server) map server)
             (close-server server)))
         :error)))
-
-(defun bratwurst-dedicated-server (&optional (port 10005))
-  (catch 'quit
-    ;; dedicated servers endlessly host games
-    (loop
-       (init-controls)
-       (unwind-protect
-	    (let ((server (start-server (list (aref *controls* 0)
-					      (aref *controls* 1)
-					      (aref *controls* 2)
-					      (aref *controls* 3))
-					t port)))
-	      (do-game (choose-stage server) (make-default-map) server))
-	 (close-server)))))
 
 (defun do-client (host &optional (port 10005))
   (let ((server (cl-start-client host (aref *network-controls* 0) port)))
     (if server
         (unwind-protect
-            (do-game (choose-stage server) (make-default-map) server)
+            (do-client-game (choose-stage server) (make-default-map) server)
           (close-client server))
         :error)))
   
@@ -1709,36 +1786,28 @@ non-colliding position. Return T if a collision occurred."
     (with-graphics (1024 768)
       (title-screen))))
 
-(defun update-controls (sym press)
-  (labels ((update (player idx)
+(defun update-controls (controls sym press)
+  (labels ((update (control player)
              (cond
                ((eq sym (controls-left player))
-                (setf (controls-left (aref *controls* idx)) press))
+                (setf (controls-left control) press))
                ((eq sym (controls-right player))
-                (setf (controls-right (aref *controls* idx)) press))
+                (setf (controls-right control) press))
                ((eq sym (controls-forward player))
-                (setf (controls-forward (aref *controls* idx)) press))
+                (setf (controls-forward control) press))
                ((eq sym (controls-special player))
-                (setf (controls-special (aref *controls* idx)) press))
+                (setf (controls-special control) press))
                ((eq sym (controls-shoot player))
-                (setf (controls-shoot (aref *controls* idx)) press)))))
-    (update *player-1-keys* 0)
-    (update *player-2-keys* 1)
-    (update *player-3-keys* 2)
-    (update *player-4-keys* 3)
+                (setf (controls-shoot control) press)))))
+    (loop
+       for c across controls
+       for p in (list *player-1-keys*
+                      *player-2-keys*
+                      *player-3-keys*
+                      *player-4-keys*)
+       do (update c p))
     (when (eq sym :sdl-key-escape)
       (throw 'main-menu t))))
-
-(defun handle-key-press (sym)
-  (update-controls sym t))
-
-(defun handle-key-release (sym)
-  (update-controls sym nil))
-
-(defun network-process-events ()
-  "call this if we're in a network game. we need to override the controls."
-  (let ((*controls* *network-controls*))
-    (process-events)))
 
 (defun wait-for-key ()
   (labels ((match-event (event type)
@@ -1754,7 +1823,7 @@ non-colliding position. Return T if a collision occurred."
          do (cond ((match-event event :sdl-key-down-event)
                    (return-from wait-for-key (keysym event))))))))
 
-(defun process-events (&optional (key-press-fn 'handle-key-press) (key-release-fn 'handle-key-release))
+(defun process-events (controls)
   (labels ((match-event (event type)
              (eql (cffi:foreign-enum-value 'sdl-cffi::Sdl-Event-Type type)
                   (cffi:foreign-slot-value event 'sdl-cffi::sdl-event 'sdl-cffi::type)))
@@ -1766,6 +1835,6 @@ non-colliding position. Return T if a collision occurred."
     (let ((event (sdl:new-event)))
       (loop while (plusp (sdl-cffi::sdl-poll-event event))
          do (cond ((match-event event :sdl-key-down-event)
-                   (funcall key-press-fn (keysym event)))
+                   (update-controls controls (keysym event) t))
                   ((match-event event :sdl-key-up-event)
-                   (funcall key-release-fn (keysym event))))))))
+                   (update-controls controls (keysym event) nil)))))))
