@@ -148,6 +148,7 @@
   (special-cooldown 0)
   special-gun
   lives
+  dead-at-frame
   ;; set to T when the player collided with the map. These players
   ;; cannot be moved for player-player collisions.
   solidified
@@ -511,9 +512,14 @@
 	   (> y (+ (rect-piece-y piece) (rect-piece-height piece))))))
 
 (defun bullet-map-collision (bullet map)
-  (find-if (lambda (p)
-             (point-piece-collision (bullet-x bullet) (bullet-y bullet) p))
-           (map-pieces map)))
+  (or (< (bullet-x bullet) 0)
+      (< (bullet-y bullet) 0)
+      ;; FIXME: hardcoded
+      (> (bullet-x bullet) 1400) 
+      (> (bullet-y bullet) 1000)
+      (find-if (lambda (p)
+                 (point-piece-collision (bullet-x bullet) (bullet-y bullet) p))
+               (map-pieces map))))
 
 (defun player-piece-collision (pts piece)
   (loop for i = pts then (cddr i)
@@ -947,13 +953,14 @@ non-colliding position. Return T if a collision occurred."
 
 (defun reset-player (player)
   (decf (player-lives player))
-  (when (> (player-lives player) 0)
-    (setf (player-health player) (ship-max-health (player-ship player))
-	  (player-ammo player) (ship-max-ammo (player-ship player))
-	  (player-special player) (max-special player)
-	  (player-x player) (player-start-x player)
-	  (player-y player) (player-start-y player)
-	  (player-angle player) -90)))
+  (if (> (player-lives player) 0)
+      (setf (player-health player) (ship-max-health (player-ship player))
+            (player-ammo player) (ship-max-ammo (player-ship player))
+            (player-special player) (max-special player)
+            (player-x player) (player-start-x player)
+            (player-y player) (player-start-y player)
+            (player-angle player) -90)
+      (setf (player-dead-at-frame player) (state-frame *state*))))
 
 (defun damage-player (player amt)
   (decf (player-health player) amt)
@@ -1486,13 +1493,16 @@ non-colliding position. Return T if a collision occurred."
                         port (parse-integer (input "Port" (prin1-to-string port) 'digit-char-p)))
                   (when (eq (do-client host port) :error)
                     (message "Failed To Connect To:" host))))))
-      (loop
-         (catch 'main-menu
-           (ecase (make-selection)
-             (:play-game (do-normal-game (choose-stage) (make-default-map)))
-             (:networking (do-network))
-             (:options (do-options))
-             ((nil :quit) (throw 'quit nil))))))))
+      (let ((music (sdl-mixer:load-music (namestring (make-pathname :defaults *resource-dir* :name "intro" :type "mp3")))))
+        (loop
+           (unless (sdl-mixer:music-playing-p)
+             (sdl-mixer:play-music music :loop t))
+           (catch 'main-menu
+             (ecase (make-selection)
+               (:play-game (do-normal-game (choose-stage) (make-default-map)))
+               (:networking (do-network))
+               (:options (do-options))
+               ((nil :quit) (throw 'quit nil)))))))))
 
 
 (defun init-controls ()
@@ -1536,9 +1546,12 @@ non-colliding position. Return T if a collision occurred."
 (defun game-area-height ()
   (- (screen-height) (sdl:height *status-buffer*)))
 
+(defun player-alive-p (p)
+  (> (player-lives p) 0))
+
 (defun alive-players (players)
   (loop for i in players
-       when (> (player-lives i) 0)
+       when (player-alive-p i)
        collect i))
 
 (defun dump-state (state)
@@ -1567,6 +1580,45 @@ non-colliding position. Return T if a collision occurred."
   (mapc 'restore-player (state-players state) (fourth dump))
   (map nil 'import-controls *controls* (fifth dump)))
 
+(defun display-results (results)
+  (let ((yinc (truncate (screen-height) 6))
+        (ystart 250)
+        (font (open-font "title" 36))
+        (gray (color 100 100 100)))
+    (loop for angle = 0 then (mod (1+ angle) 360) do
+         (loop for i in results
+            for n from 1
+            for scale = 2.5             ;4 then (* scale 0.5)
+            for y from ystart by yinc do
+            (sdl-gfx:draw-filled-circle-* (- (truncate (screen-width) 2) 160) y
+                                          45
+                                          :color (color (/ 40 n) (/ 40 n) (/ 40 n)))
+            (sdl-gfx:draw-filled-circle-* (- (truncate (screen-width) 2) 160) y
+                                          40
+                                          :color (color (/ 60 n) (/ 60 n) (/ 60 n)))
+            (sdl:draw-string-blended-* (prin1-to-string n)
+                                       (- (truncate (screen-width) 2) 160) (- y 10)
+                                       :color (color 0 0 0)
+                                       :font font)
+            (draw-ship-at (truncate (screen-width) 2)
+                          y
+                          angle scale
+                          (player-ship i)
+                          (sdl:color :r (/ (sdl:r (player-color i)) n)
+                                     :g (/ (sdl:g (player-color i)) n)
+                                     :b (/ (sdl:b (player-color i)) n))))
+         (sdl:draw-string-blended-* "Results"
+                                    100
+                                    75
+                                    :color gray
+                                    :justify :center :font font)
+         (sdl:draw-hline 0 (screen-width) 125
+                         :color gray)
+         (sdl:update-display)
+         (process-events (vector))
+         (sdl:clear-display (sdl:color))
+         (sleep 0.1))))
+            
 (defun step-game-state (state)
   "Return non-NIL when the game is over."
   (incf (state-frame state))
@@ -1628,6 +1680,12 @@ non-colliding position. Return T if a collision occurred."
            (player-start-y i) (second j)
            (player-y i) (second j))))
 
+(defun sort-dead (players)
+  (sort (copy-list players)
+        '>
+        :key (lambda (p) (or (player-dead-at-frame p)
+                             (state-frame *state*)))))
+
 (defun do-normal-game (players map)
   (let* ((time (get-internal-real-time))
 	 ;; state is thrown around all over the place so use a dynamic
@@ -1640,19 +1698,14 @@ non-colliding position. Return T if a collision occurred."
 			      :map map
                               :frame 0))
          (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50)))
+    (sdl-mixer:halt-music)
     (init-start-locations *state*)
     (loop
        do (draw-state *state*)
           (setf time (blit-buffers time))
           (process-events *controls*)
        until (step-game-state *state*))
-    ;; tell'em the deal
-    (let ((player (first (alive-players (state-players *state*)))))
-      (if player
-          (draw-text 320 240 "You Are The Winner!" (player-color player))
-          (draw-text 320 240 "Draw Game!")))
-    (sdl:update-display)
-    (loop until (eq (wait-for-key) :sdl-key-escape))))
+    (display-results (sort-dead (state-players *state*)))))
 
 (defun do-client-game (players map server)
   (let* ((time (get-internal-real-time))
@@ -1667,9 +1720,10 @@ non-colliding position. Return T if a collision occurred."
                               :frame 0))
          (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50))
          (controls (make-controls))
-         (winner))
+         (results))
+    (sdl-mixer:halt-music)
     (init-start-locations *state*)
-    (setf winner
+    (setf results
           (catch 'done
             (loop do
                  (draw-state *state*)
@@ -1682,16 +1736,11 @@ non-colliding position. Return T if a collision occurred."
                    (:state
                     (restore-state *state* (cdr %packet%)))
                    (:winner
-                    (throw 'done (elt (state-players *state*) (second %packet%))))
+                    (throw 'done (mapcar (lambda (n) (elt (state-players *state*) n)) (cdr %packet%))))
                    (:disconnect
                     (throw 'main-menu t)))
                  (step-game-state *state*))))
-    ;; tell'em the deal
-    (if winner
-        (draw-text 320 240 "You Are The Winner!" (player-color winner))
-        (draw-text 320 240 "Draw Game!"))
-    (sdl:update-display)
-    (loop until (eq (wait-for-key) :sdl-key-escape))))
+    (display-results results)))
 
 (defun do-server-game (players map server)
   (let* ((time (get-internal-real-time))
@@ -1706,6 +1755,7 @@ non-colliding position. Return T if a collision occurred."
                               :frame 0))
          (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50))
          (bk-controls (make-empty-controls-array 4)))
+    (sdl-mixer:halt-music)
     (init-start-locations *state*)
     (loop do
          (draw-state *state*)
@@ -1721,14 +1771,10 @@ non-colliding position. Return T if a collision occurred."
            (sv-send-packet server (dump-state *state*)))
 
          until (step-game-state *state*))
-    (let ((winner (first (alive-players (state-players *state*)))))
-      (sv-send-packet server `(:winner ,(position winner (state-players *state*))))
-      ;; tell'em the deal
-      (if winner
-          (draw-text 320 240 "You Are The Winner!" (player-color winner))
-          (draw-text 320 240 "Draw Game!"))
-      (sdl:update-display)
-      (loop until (eq (wait-for-key) :sdl-key-escape)))))
+    (let ((results (sort-dead (state-players *state*))))
+      (sv-send-packet server `(:winner ,@(mapcar (lambda (p) (position p (state-players *state*)))
+                                                 results)))
+      (display-results results))))
 
 (defun do-dedicated-server-game (players map server)
   (let* ((time (get-internal-real-time))
@@ -1743,6 +1789,7 @@ non-colliding position. Return T if a collision occurred."
                               :frame 0))
          (*status-buffer* (sdl:create-surface (sdl:width sdl:*default-surface*) 50))
          (bk-controls (make-empty-controls-array 4)))
+    (sdl-mixer:halt-music)
     (init-start-locations *state*)
     (loop do
          (loop while (< (- (get-internal-real-time) time) (/ internal-time-units-per-second *frame-rate*)))
@@ -1755,8 +1802,8 @@ non-colliding position. Return T if a collision occurred."
          (when (notevery 'equalp bk-controls *controls*)
            (sv-send-packet server (dump-state *state*)))
          until (step-game-state *state*))
-    (let ((winner (first (alive-players (state-players *state*)))))
-      (sv-send-packet server `(:winner ,(position winner (state-players *state*)))))))
+    (sv-send-packet server `(:winner ,@(mapcar (lambda (p) (position p (state-players *state*)))
+                                               (sort-dead (state-players *state*)))))))
 
 (defun do-server (map &optional (port 10005))
   (let ((server (start-server (list (aref *controls* 1)
