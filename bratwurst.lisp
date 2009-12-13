@@ -38,7 +38,15 @@
 
 (in-package #:bratwurst)
 
-(defvar *resource-dir* #p"/Users/sabetts/src/bratwurst/")
+(defvar *resource-dir* (make-pathname
+			:host (pathname-host #.(or *compile-file-truename*
+						   *load-truename*))
+                        :device (pathname-device #.(or *compile-file-truename*
+                                                       *load-truename*))
+			:directory (pathname-directory #.(or *compile-file-truename*
+							     *load-truename*)))
+  ;;"/Users/sabetts/src/bratwurst/"
+  )
 
 (defvar *ready* '("Play" "Eat" "Swim" "Rock"))
 
@@ -1493,16 +1501,19 @@ non-colliding position. Return T if a collision occurred."
                         port (parse-integer (input "Port" (prin1-to-string port) 'digit-char-p)))
                   (when (eq (do-client host port) :error)
                     (message "Failed To Connect To:" host))))))
-      (let ((music (sdl-mixer:load-music (namestring (make-pathname :defaults *resource-dir* :name "intro" :type "mp3")))))
+      (let* ((music-filename (namestring (make-pathname :defaults *resource-dir* :name "intro" :type "mp3")))
+             (music (when (probe-file music-filename)
+                      (sdl-mixer:load-music (namestring (make-pathname :defaults *resource-dir* :name "intro" :type "mp3"))))))
         (loop
+         (when music
            (unless (sdl-mixer:music-playing-p)
-             (sdl-mixer:play-music music :loop t))
-           (catch 'main-menu
-             (ecase (make-selection)
-               (:play-game (do-normal-game (choose-stage) (make-default-map)))
-               (:networking (do-network))
-               (:options (do-options))
-               ((nil :quit) (throw 'quit nil)))))))))
+             (sdl-mixer:play-music music :loop t)))
+         (catch 'main-menu
+           (ecase (make-selection)
+             (:play-game (do-normal-game (choose-stage) (make-default-map)))
+             (:networking (do-network))
+             (:options (do-options))
+             ((nil :quit) (throw 'quit nil)))))))))
 
 
 (defun init-controls ()
@@ -1518,12 +1529,12 @@ non-colliding position. Return T if a collision occurred."
 	(aref *network-controls* 3) (make-controls :id 3)))
 
 (defun open-font (name size)
-  (sdl-ttf:open-font (make-instance 'sdl::font-definition
-                                    :filename (namestring (probe-file (make-pathname :defaults *resource-dir* :name name :type "ttf")))
-                                    :size size)))
+  (sdl:initialise-font (make-instance 'sdl:ttf-font-definition
+				      :filename (namestring (probe-file (make-pathname :defaults *resource-dir* :name name :type "ttf")))
+				      :size size)))
 
 (defmacro with-graphics ((h w) &body body)
-  `(sdl:with-init (sdl:sdl-init-audio)
+  `(sdl:with-init ()
      (sdl-mixer:open-audio)
      (sdl:window ,h ,w :title-caption "Bratwurst")
      (setf *font* (open-font "font" 16)
@@ -1586,38 +1597,38 @@ non-colliding position. Return T if a collision occurred."
         (font (open-font "title" 36))
         (gray (color 100 100 100)))
     (loop for angle = 0 then (mod (1+ angle) 360) do
-         (loop for i in results
-            for n from 1
-            for scale = 2.5             ;4 then (* scale 0.5)
-            for y from ystart by yinc do
-            (sdl-gfx:draw-filled-circle-* (- (truncate (screen-width) 2) 160) y
-                                          45
-                                          :color (color (/ 40 n) (/ 40 n) (/ 40 n)))
-            (sdl-gfx:draw-filled-circle-* (- (truncate (screen-width) 2) 160) y
-                                          40
-                                          :color (color (/ 60 n) (/ 60 n) (/ 60 n)))
-            (sdl:draw-string-blended-* (prin1-to-string n)
-                                       (- (truncate (screen-width) 2) 160) (- y 10)
-                                       :color (color 0 0 0)
-                                       :font font)
-            (draw-ship-at (truncate (screen-width) 2)
-                          y
-                          angle scale
-                          (player-ship i)
-                          (sdl:color :r (/ (sdl:r (player-color i)) n)
-                                     :g (/ (sdl:g (player-color i)) n)
-                                     :b (/ (sdl:b (player-color i)) n))))
-         (sdl:draw-string-blended-* "Results"
-                                    100
-                                    75
-                                    :color gray
-                                    :justify :center :font font)
-         (sdl:draw-hline 0 (screen-width) 125
-                         :color gray)
-         (sdl:update-display)
-         (process-events (vector))
-         (sdl:clear-display (sdl:color))
-         (sleep 0.1))))
+          (loop for i in results
+                for n from 1
+                for scale = 2.5             ;4 then (* scale 0.5)
+                for y from ystart by yinc do
+                (sdl-gfx:draw-filled-circle-* (- (truncate (screen-width) 2) 160) y
+                                              45
+                                              :color (color (/ 40 n) (/ 40 n) (/ 40 n)))
+                (sdl-gfx:draw-filled-circle-* (- (truncate (screen-width) 2) 160) y
+                                              40
+                                              :color (color (/ 60 n) (/ 60 n) (/ 60 n)))
+                (sdl:draw-string-blended-* (prin1-to-string n)
+                                           (- (truncate (screen-width) 2) 160) (- y 10)
+                                           :color (color 0 0 0)
+                                           :font font)
+                (draw-ship-at (truncate (screen-width) 2)
+                              y
+                              angle scale
+                              (player-ship i)
+                              (sdl:color :r (/ (sdl:r (player-color i)) n)
+                                         :g (/ (sdl:g (player-color i)) n)
+                                         :b (/ (sdl:b (player-color i)) n))))
+          (sdl:draw-string-blended-* "Results"
+                                     100
+                                     75
+                                     :color gray
+                                     :justify :center :font font)
+          (sdl:draw-hline 0 (screen-width) 125
+                          :color gray)
+          (sdl:update-display)
+          (process-events (vector))
+          (sdl:clear-display (sdl:color))
+          (sleep 0.1))))
             
 (defun step-game-state (state)
   "Return non-NIL when the game is over."
@@ -1840,23 +1851,23 @@ non-colliding position. Return T if a collision occurred."
 (defun update-controls (controls sym press)
   (labels ((update (control player)
              (cond
-               ((eq sym (controls-left player))
-                (setf (controls-left control) press))
-               ((eq sym (controls-right player))
-                (setf (controls-right control) press))
-               ((eq sym (controls-forward player))
-                (setf (controls-forward control) press))
-               ((eq sym (controls-special player))
-                (setf (controls-special control) press))
-               ((eq sym (controls-shoot player))
-                (setf (controls-shoot control) press)))))
+              ((eq sym (controls-left player))
+               (setf (controls-left control) press))
+              ((eq sym (controls-right player))
+               (setf (controls-right control) press))
+              ((eq sym (controls-forward player))
+               (setf (controls-forward control) press))
+              ((eq sym (controls-special player))
+               (setf (controls-special control) press))
+              ((eq sym (controls-shoot player))
+               (setf (controls-shoot control) press)))))
     (loop
-       for c across controls
-       for p in (list *player-1-keys*
-                      *player-2-keys*
-                      *player-3-keys*
-                      *player-4-keys*)
-       do (update c p))
+     for c across controls
+     for p in (list *player-1-keys*
+                    *player-2-keys*
+                    *player-3-keys*
+                    *player-4-keys*)
+     do (update c p))
     (when (eq sym :sdl-key-escape)
       (throw 'main-menu t))))
 
@@ -1872,7 +1883,8 @@ non-colliding position. Return T if a collision occurred."
     (let ((event (sdl:new-event)))
       (loop while (plusp (sdl-cffi::sdl-wait-event event))
          do (cond ((match-event event :sdl-key-down-event)
-                   (return-from wait-for-key (keysym event))))))))
+                   (return-from wait-for-key (keysym event)))))
+      (cffi-sys:foreign-free event))))
 
 (defun process-events (controls)
   (labels ((match-event (event type)
@@ -1888,4 +1900,5 @@ non-colliding position. Return T if a collision occurred."
          do (cond ((match-event event :sdl-key-down-event)
                    (update-controls controls (keysym event) t))
                   ((match-event event :sdl-key-up-event)
-                   (update-controls controls (keysym event) nil)))))))
+                   (update-controls controls (keysym event) nil))))
+      (cffi-sys:foreign-free event))))

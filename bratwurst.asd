@@ -6,7 +6,7 @@
 (in-package #:bratwurst-system)
 
 (defsystem bratwurst
-    :depends-on (lispbuilder-sdl lispbuilder-sdl-ttf lispbuilder-sdl-image lispbuilder-sdl-mixer lispbuilder-sdl-gfx usocket)
+    :depends-on (lispbuilder-sdl lispbuilder-sdl-ttf #|lispbuilder-sdl-image|# lispbuilder-sdl-mixer lispbuilder-sdl-gfx usocket)
     :serial t
     :components ((:file "package")
                  (:file "tcp")
